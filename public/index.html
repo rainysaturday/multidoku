@@ -32,6 +32,7 @@
       <button id="enter" class="primary big">Enter the lobby</button>
       <ul class="facts">
         <li><b>1–8</b> players per table</li>
+        <li><b>Co-op or race</b> — every table picks its mode</li>
         <li><b>Soft locks</b> — a cell someone is editing is theirs</li>
         <li><b>3 hints</b> shared by the whole table</li>
       </ul>
@@ -65,6 +66,22 @@
           <option value="easy">easy</option>
           <option value="medium" selected>medium</option>
           <option value="hard">hard</option>
+        </select>
+      </label>
+      <label class="field">
+        <span>Mode</span>
+        <select id="table-mode">
+          <option value="coop" selected>co-operative</option>
+          <option value="versus">competitive race</option>
+        </select>
+      </label>
+      <label class="field">
+        <span>Clock (race only)</span>
+        <select id="table-clock">
+          <option value="0" selected>no limit</option>
+          <option value="300000">5 min</option>
+          <option value="600000">10 min</option>
+          <option value="900000">15 min</option>
         </select>
       </label>
       <button class="primary" type="submit">New table</button>
@@ -120,6 +137,28 @@
               <option value="hard">hard</option>
             </select>
           </label>
+          <label class="field inline" id="mode-wrap">
+            <span>Mode (before the round starts)</span>
+            <select id="t-mode">
+              <option value="coop">co-operative</option>
+              <option value="versus">competitive race</option>
+            </select>
+          </label>
+          <label class="field inline" id="clock-wrap">
+            <span>Clock (race only)</span>
+            <select id="t-clock">
+              <option value="0">no limit</option>
+              <option value="300000">5 min</option>
+              <option value="600000">10 min</option>
+              <option value="900000">15 min</option>
+            </select>
+          </label>
+        </div>
+
+        <div class="panel hidden" id="score-panel">
+          <h3>Scoreboard</h3>
+          <div id="scores" class="scores"></div>
+          <p class="note" id="score-note"></p>
         </div>
 
         <div class="panel">
@@ -145,7 +184,7 @@
 
 <div id="win" class="overlay hidden">
   <div class="card narrow win-card">
-    <div class="win-badge">Solved together</div>
+    <div class="win-badge" id="win-badge">Solved together</div>
     <h1 id="win-title">Puzzle complete</h1>
     <p id="win-sub" class="lede"></p>
     <div id="win-stats" class="win-stats"></div>

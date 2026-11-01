@@ -3,10 +3,14 @@
 One shared 9×9 grid per table. Everyone who sits down solves **the same puzzle at the
 same time**: your digits appear on everyone else's board instantly, coloured with your
 seat colour, credited to you, and the table wins together when the grid is complete.
+Tables can also flip into an optional **competitive race** — the same shared grid, but the
+server scores every digit and one person wins.
 
 * Node + TypeScript server (Express for static files, `ws` for realtime).
 * TypeScript browser client, no framework, no bundler — `tsc` only.
 * Tables seat 1–8; join from the lobby list, by seat number, or with a 4-letter code.
+* Two modes per table: **co-operative** (default) or a **competitive race**, chosen in the
+  lobby and switchable until the puzzle is dealt.
 
 ## Run it
 
@@ -37,7 +41,9 @@ seat is held for a player whose browser drops).
    difficulty, seat dots, status and live cell count.
 2. **Sit down at a table** — click a free seat dot on a card (that takes exactly that
    seat), press *Sit down* (next free seat), or join with a table **code**. Create your
-   own table with a name, seat count and difficulty.
+   own table with a name, seat count, difficulty and **mode** (co-operative or a
+   competitive race). Anyone seated can change difficulty, mode and the race clock at any
+   time before the puzzle is dealt — the table talk announces it.
 3. Someone presses **Start round** and a uniquely-solvable puzzle is dealt to the table.
 4. Everyone fills cells. A cell you select is **soft-locked**: other players see a coloured
    ring plus a padlock on it and cannot edit it (the lock lapses after 25 s of inactivity,
@@ -55,27 +61,68 @@ seat is held for a player whose browser drops).
 
 Conflicts (two of the same digit in a row/column/box) are highlighted for everyone, but
 whether a digit is *correct* is never revealed — you only find out by finishing, which
-keeps it a puzzle instead of a guess-and-check toy.
+keeps it a puzzle instead of a guess-and-check toy. (A race is the exception: there the
+server validates each digit so it can score it, and only the author is told when one is
+rejected.)
+
+## Competitive races (optional)
+
+A table that opts into **race** mode keeps the same shared grid — everyone is still filling
+one puzzle — but digits are validated by the server and scored:
+
+| event | effect |
+|---|---|
+| a digit that fits the solution | **+2**, and it lands on the shared board |
+| the third (and each further) digit in an unbroken run | **+1** bonus on top |
+| a digit that does not fit | **−1**, your run resets, and the digit **never reaches the board** |
+| erasing a filled cell | refused — nobody hands a point back |
+| a shared hint | reveals a digit, pays nothing |
+
+Only the person who guessed wrong sees the rejection: a red flash on that cell plus a line
+in their own toast feed. Peers just watch the scoreboard move, so the race stays readable
+without leaking answers.
+
+Scores can go **negative**, which is what makes blind guessing unprofitable: trying all
+nine digits in one cell pays +2 and costs −8, a net of **−6**. Run bonuses make a careful
+solver pull away fast — three in a row is worth 7 points where nine guesses loses 6.
+
+An optional **round clock** (5, 10 or 15 minutes in the UI) can be set in the lobby; when it
+runs out the round ends where it stands and the leader takes it. The clock belongs to the
+race: a co-op table ignores it and keeps counting elapsed time instead. When the grid is completed
+first, the win card swaps the co-op accuracy table for a **league table**: rank, points,
+best run, misses and hints, with everyone tied on points sharing a rank (a dead heat is
+announced as such). The live scoreboard in the sidebar ranks the racers the whole way
+through, with each racer's run, misses and points.
+
+Standing up and sitting somewhere else starts a player's numbers over — digits, misses,
+hints and points never follow you between tables.
 
 ## Tests
 
 ```bash
-npm test              # 58 checks: protocol, lobby/seats/locks/hints/chat/solve/reconnect
-npm run test:browser  # 39 checks: real client driven in headless Chromium, writes screenshots/
-npm run verify     # both
+npm test              # 99 checks: protocol, lobby/seats/locks/hints/chat/solve/reconnect/race
+npm run test:browser  # 80 checks: real client driven in headless Chromium, writes screenshots/
+npm run verify        # both
 ```
 
 `scripts/smoke-test.cjs` boots the server and drives a dozen websocket clients through the
 lobby (create, sit by seat, join by code, full-table refusal), soft locks, conflict
 reporting, shared hints, chat replay for late joiners, mid-game joining, a five-player
 cooperative solve, restart, stand-up, reconnect by token, seat/empty-table reclamation,
-and a full eight-seat table taken to the win by eight players at once.
+a full eight-seat table taken to the win by eight players at once, and the competitive
+race: mode switching before the deal, per-digit scoring, the run bonus, rejected digits
+that never reach the board and stay private, refused erases, standings and `winnerIds`,
+stats that reset between tables, and a short round clock ending a race nobody finished.
 
 `scripts/browser-check.cjs` drives the actual UI in two tabs of headless Chromium (override
 the binary with `CHROME=/path/to/chromium`): sign-in, lobby, sitting down, soft locks with
 drawn padlocks, typed digits appearing on the other board, author badges, shared notes and
 chat, duplicate-clash highlighting on both boards, a spent hint, a full solve through the
-keyboard to the shared win card, then *Deal another puzzle*. It captures `screenshots/*.png`
+keyboard to the shared win card, then *Deal another puzzle*. Then a second pass plays a
+race: creating it from the lobby form, the race tag and clock on the card, the scoreboard
+panel, a wrong digit rejected only to its author (flash + toast, nothing on the other
+board), a run of three paying its bonus, the leader line, a refused erase, the narrow-layout
+scoreboard, and the league table on the win card. It captures `screenshots/*.png`
 and fails if either tab throws a JS error.
 
 ## Layout
@@ -83,7 +130,7 @@ and fails if either tab throws a JS error.
 ```
 src/shared/types.ts    client<->server message + view types (shared by both builds)
 src/server/sudoku.ts   grid fill, MRV solver, uniqueness-preserving clue digging
-src/server/game.ts     Table: seating, seats, soft locks, board state, hints, chat, win
+src/server/game.ts     Table: seating, soft locks, board state, hints, chat, win + race scoring
 src/server/index.ts    HTTP + WS hub: dispatch, per-player snapshots, lobby, cleanup
 src/client/client.ts   the whole browser app (views, board renderer, input, reconnect)
 public/index.html      three views: sign-in, lobby, at-a-table (+ win overlay)

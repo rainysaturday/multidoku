@@ -105,6 +105,16 @@ class Hub {
         case 'notice':
           this.send(action.to, { type: 'error', message: action.message });
           break;
+        case 'reject':
+          /* only the player who tried the digit hears about it */
+          this.send(action.to, {
+            type: 'reject',
+            cell: action.cell,
+            points: action.points,
+            message: action.message,
+            ts: Date.now(),
+          });
+          break;
         case 'event':
           if (action.text) this.broadcastTable(table, { type: 'event', kind: action.ekind, text: action.text, ts: Date.now() });
           break;
@@ -166,7 +176,14 @@ class Hub {
           break;
         }
         const name = cleanName(msg.name, `${player.name}'s table`);
-        const t = new Table(name, Number(msg.maxPlayers ?? 4), clampDifficulty(msg.difficulty));
+        /* mode + clock are clamped inside Table (unknown mode falls back to co-op) */
+        const t = new Table(
+          name,
+          Number(msg.maxPlayers ?? 4),
+          clampDifficulty(msg.difficulty),
+          msg.mode,
+          msg.timeLimitMs,
+        );
         this.tables.set(t.id, t);
         this.sitAt(player, t);
         break;
@@ -200,6 +217,13 @@ class Hub {
       case 'setDifficulty': {
         if (!table) break;
         this.apply(table, table.setDifficulty(player, clampDifficulty(msg.difficulty)));
+        this.publishTable(table);
+        this.publishLobby();
+        break;
+      }
+      case 'setRules': {
+        if (!table) break;
+        this.apply(table, table.setRules(player, msg.mode, msg.timeLimitMs));
         this.publishTable(table);
         this.publishLobby();
         break;
@@ -330,6 +354,10 @@ class Hub {
         correct: 0,
         wrong: 0,
         hintsUsed: 0,
+        score: 0,
+        streak: 0,
+        best: 0,
+        strikes: 0,
       };
       this.players.set(id, player);
       this.tokens.set(player.token, id);
@@ -400,7 +428,16 @@ class Hub {
       this.tokens.delete(player.token);
     }
     for (const [id, table] of [...this.tables]) {
-      if (table.empty()) this.tables.delete(id);
+      if (table.empty()) {
+        this.tables.delete(id);
+        continue;
+      }
+      /* a race can end on the clock even if nobody touches the board */
+      const actions = table.timeUp(now);
+      if (actions.length) {
+        this.apply(table, actions);
+        this.publishTable(table);
+      }
     }
     this.publishLobby();
   }

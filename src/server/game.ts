@@ -6,7 +6,16 @@ import {
   type Difficulty,
   type Puzzle,
 } from './sudoku';
-import type { EventKind, LobbySummary, PlayerView, TableView, TableStatus } from '../shared/types';
+import type {
+  EndReason,
+  EventKind,
+  LobbySummary,
+  Mode,
+  PlayerView,
+  Standing,
+  TableView,
+  TableStatus,
+} from '../shared/types';
 
 export const PALETTE = [
   '#3e8ed0', // blue
@@ -23,6 +32,17 @@ export const MAX_SEATS = 8;
 export const HINTS_TOTAL = 3;
 /** A claimed (selected) cell is released if the player goes quiet this long. */
 export const LOCK_TTL_MS = 25_000;
+
+/* --- competitive mode scoring ------------------------------------- */
+export const SCORE_CORRECT = 2;
+/** bonus on top of SCORE_CORRECT once a player is on a run */
+export const SCORE_STREAK_BONUS = 1;
+export const STREAK_TRIGGER = 3;
+/** cost of a digit that was not the solution (never lands on the board) */
+export const SCORE_WRONG = 1;
+/** round clock choices: 0 = unlimited, otherwise at least 10 s */
+export const MIN_TIME_LIMIT_MS = 10_000;
+export const MAX_TIME_LIMIT_MS = 60 * 60_000;
 const CHAT_LOG_SIZE = 40;
 
 /* ------------------------------------------------------------------ */
@@ -44,6 +64,11 @@ export interface Player {
   correct: number;
   wrong: number;
   hintsUsed: number;
+  /* competitive mode only */
+  score: number;
+  streak: number;
+  best: number;
+  strikes: number;
 }
 
 export interface ChatEntry {
@@ -58,6 +83,8 @@ export interface ChatEntry {
 export type TableAction =
   | { kind: 'error'; to: string; message: string }
   | { kind: 'notice'; to: string; message: string }
+  /** competitive mode: a digit that did not belong in that cell */
+  | { kind: 'reject'; to: string; cell: number; points: number; message: string }
   | { kind: 'event'; ekind: EventKind; text: string }
   | { kind: 'chat'; entry: ChatEntry };
 
@@ -69,6 +96,21 @@ const newCode = (): string =>
 
 const coord = (cell: number): string => `R${Math.floor(cell / 9) + 1}C${(cell % 9) + 1}`;
 
+const clampMode = (value: unknown): Mode => (value === 'versus' ? 'versus' : 'coop');
+
+/** How the table talk describes the round clock: "5 min", "90s", "no clock". */
+export function clockWords(ms: number): string {
+  if (!ms) return 'no clock';
+  return ms % 60_000 === 0 ? `${ms / 60_000} min` : `${Math.round(ms / 1000)}s`;
+}
+
+/** 0 means "no clock"; anything else is clamped into a sane range. */
+export const clampTimeLimit = (value: unknown): number => {
+  const ms = Math.floor(Number(value));
+  if (!Number.isFinite(ms) || ms <= 0) return 0;
+  return Math.min(MAX_TIME_LIMIT_MS, Math.max(MIN_TIME_LIMIT_MS, ms));
+};
+
 /* ------------------------------------------------------------------ */
 /* Table                                                              */
 /* ------------------------------------------------------------------ */
@@ -78,6 +120,8 @@ export class Table {
   readonly code: string;
   name: string;
   difficulty: Difficulty;
+  mode: Mode;
+  timeLimitMs: number;
   maxPlayers: number;
   status: TableStatus = 'lobby';
   ownerId: string | null = null;
@@ -97,16 +141,31 @@ export class Table {
   hintsLeft = HINTS_TOTAL;
   startedAt: number | null = null;
   endedAt: number | null = null;
+  endedBy: EndReason | null = null;
+  winnerIds: string[] = [];
+  standings: Standing[] | null = null;
 
   chatLog: ChatEntry[] = [];
   private chatSeq = 0;
 
-  constructor(name: string, maxPlayers: number, difficulty: Difficulty) {
+  constructor(
+    name: string,
+    maxPlayers: number,
+    difficulty: Difficulty,
+    mode: Mode = 'coop',
+    timeLimitMs = 0,
+  ) {
     this.id = newId(5);
     this.code = newCode();
     this.name = name;
     this.maxPlayers = Math.max(1, Math.min(MAX_SEATS, Math.floor(maxPlayers) || 2));
     this.difficulty = difficulty;
+    this.mode = clampMode(mode);
+    this.timeLimitMs = clampTimeLimit(timeLimitMs);
+  }
+
+  get racing(): boolean {
+    return this.mode === 'versus';
   }
 
   /* -------------------- seating -------------------- */
@@ -137,6 +196,7 @@ export class Table {
     }
     player.seat = place;
     player.color = PALETTE[place % PALETTE.length];
+    this.freshen(player);
     this.players.push(player);
     this.byId.set(player.id, player);
     this.alumni.delete(player.id);
@@ -186,11 +246,17 @@ export class Table {
     this.status = 'playing';
     this.startedAt = Date.now();
     this.endedAt = null;
+    const article = this.difficulty === 'easy' ? 'an' : 'a';
+    const how = this.racing
+      ? `Fill cells right to score, wrong ones cost you a point${
+          this.timeLimitMs ? ` — the clock is ${clockWords(this.timeLimitMs)}` : ''
+        }.`
+      : 'Solve it together!';
     return [
       {
         kind: 'event',
         ekind: 'start',
-        text: `${by.name} dealt ${this.difficulty === 'hard' ? 'a' : this.difficulty === 'easy' ? 'an' : 'a'} ${this.difficulty} puzzle with ${this.puzzle!.givens} clues. Solve it together!`,
+        text: `${by.name} dealt ${article} ${this.difficulty} puzzle with ${this.puzzle!.givens} clues. ${how}`,
       },
     ];
   }
@@ -213,7 +279,48 @@ export class Table {
     this.notes = new Array(81).fill(0);
     this.editor = new Array(81).fill(null);
     this.hintsLeft = HINTS_TOTAL;
-    for (const p of this.players) p.selected = null;
+    this.endedBy = null;
+    this.winnerIds = [];
+    this.standings = null;
+    for (const p of this.players) this.freshen(p);
+  }
+
+  /**
+   * A clean slate for one solver at this table: nobody inherits digits, hints,
+   * misses or points from the table they last stood up from, and a re-deal
+   * starts every count over again.
+   */
+  private freshen(p: Player): void {
+    p.selected = null;
+    p.selectedAt = 0;
+    p.placements = 0;
+    p.correct = 0;
+    p.wrong = 0;
+    p.hintsUsed = 0;
+    p.score = 0;
+    p.streak = 0;
+    p.best = 0;
+    p.strikes = 0;
+  }
+
+  /** Mode and clock can be changed by anyone seated, but only before the deal. */
+  setRules(by: Player, mode: unknown, timeLimitMs: unknown): TableAction[] {
+    if (this.status !== 'lobby') {
+      return [{ kind: 'error', to: by.id, message: 'Rules can only change before the round starts.' }];
+    }
+    const next = clampMode(mode);
+    const limit = clampTimeLimit(timeLimitMs);
+    if (next === this.mode && limit === this.timeLimitMs) return [];
+    this.mode = next;
+    this.timeLimitMs = limit;
+    const clock = `, ${clockWords(limit)} clock`;
+    return [
+      {
+        kind: 'event',
+        ekind: 'info',
+        text: `${by.name} set ${next === 'versus' ? 'a race: correct digits score, wrong digits cost you' : 'co-operative play'}${clock}.`,
+      },
+    ];
   }
 
   setDifficulty(by: Player, difficulty: Difficulty): TableAction[] {
@@ -246,6 +353,40 @@ export class Table {
     const check = this.editable(by, cell, digit);
     if (check) return check;
     const solution = this.puzzle!.solution;
+
+    if (this.racing) {
+      if (digit !== solution[cell]) {
+        /* The digit never touches the shared board: only the player who tried it
+           learns it was wrong, and they pay for the attempt. */
+        by.wrong++;
+        by.strikes++;
+        by.streak = 0;
+        /* negative scores are on purpose: feeling lucky has a price, so trying
+           every digit in turn loses more (+2) than it pays (-8). */
+        by.score -= SCORE_WRONG;
+        return [
+          {
+            kind: 'reject',
+            to: by.id,
+            cell,
+            points: SCORE_WRONG,
+            message: `${coord(cell)} is not a fit (-${SCORE_WRONG} point${SCORE_WRONG > 1 ? 's' : ''}) — ${by.strikes} miss${by.strikes > 1 ? 'es' : ''} for you.`,
+          },
+        ];
+      }
+      this.digits[cell] = digit;
+      this.notes[cell] = 0;
+      this.editor[cell] = by.id;
+      if (by.selected === null) by.selected = cell;
+      by.selectedAt = Date.now();
+      by.placements++;
+      by.correct++;
+      by.streak++;
+      by.best = Math.max(by.best, by.streak);
+      by.score += SCORE_CORRECT + (by.streak >= STREAK_TRIGGER ? SCORE_STREAK_BONUS : 0);
+      return this.afterEdit();
+    }
+
     this.digits[cell] = digit;
     this.notes[cell] = 0;
     this.editor[cell] = by.id;
@@ -265,6 +406,9 @@ export class Table {
     const holder = this.lockedBy(cell, by.id);
     if (holder) {
       return [{ kind: 'notice', to: by.id, message: `${holder.name} is working on ${coord(cell)}.` }];
+    }
+    if (this.racing && this.digits[cell]) {
+      return [{ kind: 'notice', to: by.id, message: 'In a race filled cells stay filled — nobody hands a point back.' }];
     }
     if (!this.digits[cell] && !this.notes[cell]) return [];
     this.digits[cell] = 0;
@@ -305,10 +449,16 @@ export class Table {
     this.editor[cell] = by.id;
     this.hintsLeft--;
     by.hintsUsed++;
-    by.placements++;
-    by.correct++;
+    if (!this.racing) {
+      by.placements++;
+      by.correct++;
+    }
     const acts: TableAction[] = [
-      { kind: 'event', ekind: 'hint', text: `${by.name} spent a hint on ${coord(cell)} (${this.hintsLeft} left).` },
+      {
+        kind: 'event',
+        ekind: 'hint',
+        text: `${by.name} spent a hint on ${coord(cell)} (${this.hintsLeft} left${this.racing ? ', worth no points' : ''}).`,
+      },
     ];
     return acts.concat(this.afterEdit());
   }
@@ -331,25 +481,102 @@ export class Table {
     return null;
   }
 
-  /** Shared tail for every board mutation: declare a win when the grid is complete. */
+  /** Shared tail for every board mutation: end the round when the grid is complete. */
   private afterEdit(): TableAction[] {
     if (this.status !== 'playing') return [];
     if (!isValidCompletion(this.digits)) return [];
+    return this.finish('solved');
+  }
+
+  /** The race clock. The hub calls this on each sweep so a round cannot run past
+      its limit even if everyone stops playing. */
+  timeUp(now = Date.now()): TableAction[] {
+    if (this.status !== 'playing' || !this.racing || !this.timeLimitMs || this.startedAt === null) return [];
+    if (now - this.startedAt < this.timeLimitMs) return [];
+    return this.finish('timeout');
+  }
+
+  /** Countdown for a race only; a co-op table is never on the clock. */
+  remainingMs(now = Date.now()): number | null {
+    if (!this.racing || !this.timeLimitMs || this.startedAt === null) return null;
+    return Math.max(0, this.timeLimitMs - (now - this.startedAt));
+  }
+
+  private finish(endedBy: EndReason): TableAction[] {
     this.status = 'won';
     this.endedAt = Date.now();
+    this.endedBy = endedBy;
+    for (const p of this.players) p.selected = null;
     const seconds = Math.round((this.endedAt - (this.startedAt ?? this.endedAt)) / 1000);
     const minutes = Math.floor(seconds / 60);
-    for (const p of this.players) p.selected = null;
+    const clock = `${minutes}m ${String(seconds % 60).padStart(2, '0')}s`;
+    this.standings = this.ranking();
+    this.winnerIds = this.standings.filter((s) => s.rank === 1).map((s) => s.playerId);
+
+    if (this.racing) {
+      const leaders = this.standings.filter((s) => s.rank === 1);
+      const podium = this.standings.slice(0, 3).map((s) => `${s.name} ${s.score}`).join(', ');
+      const reason = endedBy === 'timeout' ? `Time up after ${clock}` : `Grid filled in ${clock}`;
+      if (leaders[0]!.score <= 0) {
+        return [
+          {
+            kind: 'event',
+            ekind: 'win',
+            text: `${reason} with nobody on the board — ${this.players.map((p) => p.name).join(', ')} all scored zero. Deal another puzzle?`,
+          },
+        ];
+      }
+      return [
+        {
+          kind: 'event',
+          ekind: 'win',
+          text: `${reason} — ${leaders.map((s) => s.name).join(' & ')} wins with ${leaders[0]!.score} point${
+            leaders[0]!.score === 1 ? '' : 's'
+          } (${podium}).`,
+        },
+      ];
+    }
+
     const roster = this.players.map((p) => `${p.name}${p.hintsUsed ? ` (${p.hintsUsed} hint${p.hintsUsed > 1 ? 's' : ''})` : ''}`).join(', ');
     return [
       {
         kind: 'event',
         ekind: 'win',
-        text: `Solved in ${minutes}m ${String(seconds % 60).padStart(2, '0')}s by ${roster}. ${
+        text: `Solved in ${clock} by ${roster}. ${
           this.hintsLeft === HINTS_TOTAL ? 'No hints used — clean win!' : `${HINTS_TOTAL - this.hintsLeft} hint(s) used.`
         }`,
       },
     ];
+  }
+
+  /** Score-first order (cells placed first in co-op). Identical records share a rank. */
+  private ranking(): Standing[] {
+    const metric = (p: Player): number => (this.racing ? p.score : p.placements);
+    const tieKey = (p: Player): string => `${metric(p)}|${p.wrong}|${p.hintsUsed}`;
+    const sorted = [...this.players].sort(
+      (a, b) =>
+        metric(b) - metric(a) ||
+        a.wrong - b.wrong ||
+        a.hintsUsed - b.hintsUsed ||
+        a.name.localeCompare(b.name),
+    );
+    const out: Standing[] = [];
+    sorted.forEach((p, i) => {
+      const rank = i > 0 && tieKey(p) === tieKey(sorted[i - 1]!) ? out[i - 1]!.rank : i + 1;
+      out.push({
+        playerId: p.id,
+        name: p.name,
+        color: p.color,
+        isYou: false,
+        rank,
+        score: metric(p),
+        correct: p.correct,
+        wrong: p.wrong,
+        best: p.best,
+        hintsUsed: p.hintsUsed,
+      });
+    });
+    return out;
   }
 
   /** Player chat: stored in a rolling log and replayed to people who sit down. */
@@ -387,6 +614,8 @@ export class Table {
       code: this.code,
       name: this.name,
       difficulty: this.difficulty,
+      mode: this.mode,
+      timeLimitMs: this.timeLimitMs,
       maxPlayers: this.maxPlayers,
       status: this.status,
       players: this.players
@@ -404,6 +633,10 @@ export class Table {
           wrong: p.wrong,
           hintsUsed: p.hintsUsed,
           isYou: p.id === forPlayer.id,
+          score: p.score,
+          streak: p.streak,
+          best: p.best,
+          strikes: p.strikes,
         })),
       givens: this.givens.slice(),
       digits: this.digits.slice(),
@@ -417,6 +650,12 @@ export class Table {
       startedAt: this.startedAt,
       endedAt: this.endedAt,
       elapsedMs: this.elapsedMs(),
+      remainingMs: this.remainingMs(),
+      endedBy: this.endedBy,
+      winnerIds: [...this.winnerIds],
+      standings: this.standings
+        ? this.standings.map((s) => ({ ...s, isYou: s.playerId === forPlayer.id }))
+        : null,
       myAccuracies: this.players.map((p) => ({ playerId: p.id, correct: p.correct, wrong: p.wrong })),
       alumni: [...this.alumni.values()],
     };
@@ -428,6 +667,8 @@ export class Table {
       code: this.code,
       name: this.name,
       difficulty: this.difficulty,
+      mode: this.mode,
+      timeLimitMs: this.timeLimitMs,
       maxPlayers: this.maxPlayers,
       playerCount: this.players.length,
       connected: this.players.filter((p) => p.socketId !== null).length,

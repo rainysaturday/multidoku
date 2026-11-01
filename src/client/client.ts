@@ -1,4 +1,12 @@
-import type { ClientMessage, LobbySummary, PlayerView, ServerMessage, TableView } from '../shared/types';
+import type {
+  ClientMessage,
+  LobbySummary,
+  Mode,
+  PlayerView,
+  ServerMessage,
+  Standing,
+  TableView,
+} from '../shared/types';
 
 /* ------------------------------------------------------------------ */
 /* state                                                              */
@@ -22,7 +30,9 @@ const app = {
   notesMode: false,
   lastChatId: 0,
   feedTableId: null as string | null,
-  clock: { base: 0, at: 0 },
+  clock: { base: 0, at: 0, remaining: null as number | null },
+  /** cell the last rejected digit landed on, for the red flash */
+  flash: null as { cell: number; at: number } | null,
   outbox: [] as ClientMessage[],
   backoff: 500,
 };
@@ -143,6 +153,16 @@ function handle(msg: ServerMessage): void {
       if (app.feedTableId !== currentTableId()) resetFeed();
       addEvent(msg.kind, msg.text, msg.ts);
       break;
+    case 'reject':
+      /* competitive mode: the digit never reached the shared board */
+      app.flash = { cell: msg.cell, at: Date.now() };
+      toast(msg.message, true);
+      window.setTimeout(() => {
+        app.flash = null;
+        renderBoard();
+      }, 700);
+      renderBoard();
+      break;
     case 'error':
       toast(msg.message, true);
       break;
@@ -170,7 +190,7 @@ function onTable(table: TableView): void {
   app.table = table;
   const me = table.players.find((p) => p.isYou)!;
   app.myCell = me.selected;
-  app.clock = { base: table.elapsedMs, at: Date.now() };
+  app.clock = { base: table.elapsedMs, at: Date.now(), remaining: table.remainingMs };
   if (app.view !== 'table') go('table');
   renderTable();
   if (table.status === 'won') showWin(table);
@@ -238,7 +258,9 @@ function renderLobby(): void {
     const meta = document.createElement('div');
     meta.className = 'tmeta';
     meta.innerHTML = `<span class="tag ${t.difficulty}">${t.difficulty}</span>
+      <span class="tag ${t.mode}">${t.mode === 'versus' ? 'race' : 'co-op'}</span>
       <span class="tag ${t.status}">${t.status === 'playing' ? 'playing' : t.status === 'won' ? 'solved' : 'waiting'}</span>
+      ${t.mode === 'versus' && t.timeLimitMs ? `<span>${clockText(t.timeLimitMs)}</span><span>·</span>` : ''}
       <span>${t.playerCount}/${t.maxPlayers} seated</span><span>·</span><span>code <b>${t.code}</b></span>
       ${t.you ? '<span class="tag you">you</span>' : ''}
       ${t.status === 'playing' ? `<span>·</span><span>${t.filled}/81 cells</span>` : ''}`;
@@ -353,6 +375,10 @@ function useDigit(digit: number): void {
   else send({ type: 'place', cell: app.myCell, digit });
 }
 
+/** "5 min clock" / "90s clock" / "no clock" — how the UI names the round timer. */
+const clockText = (ms: number): string =>
+  !ms ? 'no clock' : ms % 60_000 === 0 ? `${ms / 60_000} min clock` : `${Math.round(ms / 1000)}s clock`;
+
 const coord = (cell: number): string => `R${Math.floor(cell / 9) + 1}C${(cell % 9) + 1}`;
 const initials = (name: string): string =>
   name
@@ -377,10 +403,19 @@ function renderTable(): void {
   if (!t) return;
   $('t-name').textContent = t.name;
   $('t-code').textContent = t.code;
-  $('t-meta').textContent = `${t.difficulty} · ${t.players.length}/${t.maxPlayers} seated`;
-  $('diff-wrap').classList.toggle('hidden', t.status !== 'lobby');
+  const open = t.status === 'lobby';
+  const clockLabel = ` ${clockText(t.timeLimitMs)}`;
+  $('t-meta').textContent = `${t.difficulty} · ${t.players.length}/${t.maxPlayers} seated · ${
+    t.mode === 'versus' ? `race (${clockLabel.trim()})` : 'co-op'
+  }`;
+  $('diff-wrap').classList.toggle('hidden', !open);
   ($('t-diff') as HTMLSelectElement).value = t.difficulty;
-  ($('t-diff') as HTMLSelectElement).disabled = t.status !== 'lobby';
+  ($('t-diff') as HTMLSelectElement).disabled = !open;
+  for (const id of ['mode-wrap', 'clock-wrap'] as const) $(id).classList.toggle('hidden', !open);
+  ($('t-mode') as HTMLSelectElement).value = t.mode;
+  ($('t-mode') as HTMLSelectElement).disabled = !open;
+  ($('t-clock') as HTMLSelectElement).value = String(t.timeLimitMs);
+  ($('t-clock') as HTMLSelectElement).disabled = !open;
   $('t-status').textContent =
     t.status === 'lobby'
       ? 'waiting in the lobby — press Start round'
@@ -389,6 +424,7 @@ function renderTable(): void {
         : `hints left ${t.hintsLeft}/${t.hintsTotal}`;
 
   renderSeats();
+  renderScoreboard();
   renderProgress();
   renderButtons();
   renderBoard();
@@ -428,12 +464,67 @@ function renderSeats(): void {
   }
 }
 
+/** Live standings. Only shown for a race; co-op has no winners to rank. */
+function renderScoreboard(): void {
+  const t = app.table!;
+  const panel = $('score-panel');
+  panel.classList.toggle('hidden', t.mode !== 'versus');
+  if (t.mode !== 'versus') return;
+
+  const box = $('scores');
+  box.innerHTML = '';
+  const rows = [...t.players].sort(
+    (a, b) => b.score - a.score || b.correct - a.correct || a.wrong - b.wrong || a.name.localeCompare(b.name),
+  );
+  rows.forEach((p, i) => {
+    const line = document.createElement('div');
+    line.className = `scoreline${p.isYou ? ' you' : ''}${i === 0 && p.score > 0 ? ' lead' : ''}${p.strikes >= 3 ? ' wild' : ''}`;
+    const rk = document.createElement('span');
+    rk.className = 'rk';
+    rk.textContent = `${i + 1}`;
+    const dot = document.createElement('span');
+    dot.className = 'dot';
+    dot.style.background = p.color;
+    const nm = document.createElement('span');
+    nm.className = 'nm';
+    nm.textContent = `${p.name}${p.isYou ? ' (you)' : ''}`;
+    const sub = document.createElement('span');
+    sub.className = 'sub';
+    const bits: string[] = [`${p.correct} right`];
+    if (p.streak >= 3) bits.push(`run x${p.streak}`);
+    else if (p.best >= 3) bits.push(`best x${p.best}`);
+    if (p.strikes) bits.push(`${p.strikes} miss${p.strikes > 1 ? 'es' : ''}`);
+    if (p.hintsUsed) bits.push(`${p.hintsUsed} hint${p.hintsUsed > 1 ? 's' : ''}`);
+    sub.textContent = bits.join(' · ');
+    const pts = document.createElement('span');
+    pts.className = 'pts';
+    pts.textContent = String(p.score);
+    pts.title = 'points';
+    line.append(rk, dot, nm, sub, pts);
+    box.append(line);
+  });
+
+  $('score-note').textContent =
+    t.status === 'playing'
+      ? 'A digit that fits scores; three in a row pays a bonus; a digit that does not fit costs you a point and never reaches the board. Filled cells cannot be erased.'
+      : t.status === 'lobby'
+        ? 'Everyone at this table is racing on the same grid.'
+        : 'Highest score takes the race.';
+}
+
 function renderProgress(): void {
   const t = app.table!;
   const bar = $('bar');
   const pct = t.totalToFill ? Math.min(100, Math.round((t.filled / t.totalToFill) * 100)) : 0;
   bar.style.width = `${pct}%`;
   const extra = t.conflicts.length ? ` · ${t.conflicts.length} clashing cell${t.conflicts.length > 1 ? 's' : ''}` : '';
+  if (t.mode === 'versus' && t.status === 'playing') {
+    const lead = [...t.players].sort((a, b) => b.score - a.score)[0];
+    $('prog').textContent = `${t.filled}/${t.totalToFill} cells filled${
+      lead && lead.score > 0 ? ` · ${lead.name} leads on ${lead.score}` : ''
+    }`;
+    return;
+  }
   $('prog').textContent =
     t.status === 'lobby'
       ? `Press Start round when the table is ready (${t.difficulty}).`
@@ -484,6 +575,7 @@ function renderBoard(): void {
     if (isGiven) el.classList.add('given');
     else if (digit) el.classList.add('filled', 'done');
     if (conflicts.has(i)) el.classList.add('conflict');
+    if (app.flash && app.flash.cell === i && Date.now() - app.flash.at < 700) el.classList.add('reject');
     if (app.myCell !== null && sameUnit(app.myCell, i)) el.classList.add('peer');
     if (selDigit && digit === selDigit) el.classList.add('same');
     if (app.myCell === i) el.classList.add('sel');
@@ -529,14 +621,25 @@ function renderReadout(): void {
   el.textContent = `${coord(cell)} · ${kind}${t.digits[cell] ? ` · currently ${t.digits[cell]}` : ''}`;
 }
 
+const fmtClock = (ms: number): string => {
+  const total = Math.max(0, Math.floor(ms / 1000));
+  return `${String(Math.floor(total / 60)).padStart(2, '0')}:${String(total % 60).padStart(2, '0')}`;
+};
+
 function tickClock(): void {
   const t = app.table;
   if (!t) return;
+  const el = $('timer');
+  const racing = t.mode === 'versus' && t.timeLimitMs > 0;
+  if (racing && t.status === 'playing') {
+    const left = Math.max(0, (app.clock.remaining ?? t.timeLimitMs) - (Date.now() - app.clock.at));
+    el.textContent = `${fmtClock(left)} left`;
+    el.classList.toggle('danger', left <= 60_000);
+    return;
+  }
+  el.classList.remove('danger');
   const ms = t.status === 'playing' ? app.clock.base + (Date.now() - app.clock.at) : app.clock.base;
-  const total = Math.floor(ms / 1000);
-  const mins = Math.floor(total / 60);
-  const secs = total % 60;
-  $('timer').textContent = `${String(mins).padStart(2, '0')}:${String(secs).padStart(2, '0')}`;
+  el.textContent = fmtClock(ms);
 }
 window.setInterval(tickClock, 250);
 
@@ -598,11 +701,35 @@ function showWin(table: TableView): void {
   if (overlay.dataset.shown === table.id) return;
   overlay.dataset.shown = table.id;
   const seconds = Math.round(table.elapsedMs / 1000);
+  const clock = `${Math.floor(seconds / 60)}m ${String(seconds % 60).padStart(2, '0')}s`;
+
+  if (table.mode === 'versus') {
+    const board = table.standings ?? [];
+    const leaders = board.filter((s) => s.rank === 1);
+    $('win-badge').textContent = table.endedBy === 'timeout' ? 'Time up' : 'Race over';
+    $('win-title').textContent =
+      leaders.length === 0 || leaders[0]!.score <= 0
+        ? 'Nobody scored'
+        : leaders.length === 1
+          ? `${leaders[0]!.name} wins${leaders[0]!.isYou ? ' — that is you' : ''}`
+          : `Dead heat: ${leaders.map((s) => s.name).join(', ')}`;
+    $('win-sub').textContent = `${table.name} · ${table.difficulty} · race with ${table.players.length} racer${
+      table.players.length > 1 ? 's' : ''
+    } · ${clock} · ${table.endedBy === 'timeout' ? 'the clock ran out' : 'grid completed'} · hints used ${
+      table.hintsTotal - table.hintsLeft
+    }/${table.hintsTotal}`;
+    renderStandings(board);
+    overlay.classList.remove('hidden');
+    return;
+  }
+
+  $('win-badge').textContent = 'Solved together';
   $('win-sub').textContent = `${table.name} · ${table.difficulty} · ${table.players.length} solver${
     table.players.length > 1 ? 's' : ''
   } · ${Math.floor(seconds / 60)}m ${String(seconds % 60).padStart(2, '0')}s · hints used ${table.hintsTotal - table.hintsLeft}/${table.hintsTotal}`;
 
   const grid = $('win-stats');
+  grid.className = 'win-stats';
   grid.innerHTML = '';
   const header = ['solver', 'placements', 'accuracy', 'hints'];
   grid.append(
@@ -634,6 +761,31 @@ function showWin(table: TableView): void {
   overlay.classList.remove('hidden');
 }
 
+/** Final league table for a race. */
+function renderStandings(board: Standing[]): void {
+  const grid = $('win-stats');
+  grid.className = 'win-stats versus';
+  grid.innerHTML = '';
+  const header = ['#', 'solver', 'points', 'best run', 'misses', 'hints'];
+  grid.append(
+    ...header.map((h, i) => {
+      const s = document.createElement('div');
+      s.className = i === 1 ? 'h' : 'h num';
+      s.textContent = h;
+      return s;
+    }),
+  );
+  for (const s of board) {
+    const name = document.createElement('div');
+    name.innerHTML = '';
+    const dot = document.createElement('span');
+    dot.className = 'dot';
+    dot.style.cssText = `display:inline-block;width:9px;height:9px;border-radius:50%;background:${s.color};margin-right:6px`;
+    name.append(dot, document.createTextNode(`${s.name}${s.isYou ? ' (you)' : ''}`));
+    grid.append(num(s.rank), name, num(s.score), num(`x${s.best}`), num(s.wrong), num(s.hintsUsed));
+  }
+}
+
 const num = (value: string | number): HTMLElement => {
   const s = document.createElement('div');
   s.className = 'num';
@@ -663,6 +815,8 @@ $('create-form').addEventListener('submit', (e: Event) => {
     name: ($('table-name') as HTMLInputElement).value.trim() || `${app.name}'s table`,
     maxPlayers: Number(($('table-seats') as HTMLSelectElement).value),
     difficulty: ($('table-diff') as HTMLSelectElement).value as 'easy' | 'medium' | 'hard',
+    mode: ($('table-mode') as HTMLSelectElement).value as Mode,
+    timeLimitMs: Number(($('table-clock') as HTMLSelectElement).value),
   });
 });
 
@@ -677,6 +831,20 @@ $('join-code').addEventListener('click', () => {
 $('btn-start').addEventListener('click', () => send({ type: 'start' }));
 $('t-diff').addEventListener('change', () => {
   send({ type: 'setDifficulty', difficulty: ($('t-diff') as HTMLSelectElement).value as 'easy' | 'medium' | 'hard' });
+});
+$('t-mode').addEventListener('change', () => {
+  send({
+    type: 'setRules',
+    mode: ($('t-mode') as HTMLSelectElement).value as Mode,
+    timeLimitMs: Number(($('t-clock') as HTMLSelectElement).value),
+  });
+});
+$('t-clock').addEventListener('change', () => {
+  send({
+    type: 'setRules',
+    mode: ($('t-mode') as HTMLSelectElement).value as Mode,
+    timeLimitMs: Number(($('t-clock') as HTMLSelectElement).value),
+  });
 });
 $('btn-hint').addEventListener('click', () => send({ type: 'hint' }));
 $('btn-restart').addEventListener('click', () => send({ type: 'restart' }));

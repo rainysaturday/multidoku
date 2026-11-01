@@ -177,6 +177,8 @@ async function main() {
     await tabA.cmd('Page.navigate', { url: `${BASE}/` });
     await tabA.waitForJs(`document.getElementById('view-signin') && /Pull up a chair/.test(document.body.innerText)`, 'sign-in rendered');
     check(true, 'sign-in screen renders in the browser');
+    /* the board is built at boot, so 81 cells means the client script is live */
+    await tabA.waitForJs(`document.querySelectorAll('#board .cell').length === 81`, 'client script has booted');
 
     await tabA.js(`document.getElementById('name').value = 'Ana'`);
     await tabA.shot('01-signin');
@@ -184,6 +186,8 @@ async function main() {
     await tabA.waitForJs(`!document.getElementById('view-lobby').classList.contains('hidden')`, 'lobby');
     check(true, 'entering a name opens the lobby');
     check((await tabA.js(`document.getElementById('conn').textContent`)) === 'connected', 'websocket reports connected');
+    await tabA.waitForJs(`document.getElementById('who').textContent.includes('Ana')`, 'signed in as Ana');
+    check(true, 'the name typed at sign-in sticks');
 
     await tabA.js(`document.getElementById('table-name').value = 'Friday grid';
                    document.getElementById('table-diff').value = 'easy';
@@ -203,9 +207,12 @@ async function main() {
     await tabB.cmd('Runtime.enable');
     await tabB.cmd('Emulation.setDeviceMetricsOverride', { width: 1200, height: 900, deviceScaleFactor: 1, mobile: false });
     await tabB.cmd('Page.navigate', { url: `${BASE}/` });
+    await tabB.waitForJs(`document.querySelectorAll('#board .cell').length === 81`, 'tabB client booted');
     await tabB.js(`document.getElementById('name').value = 'Bo'`);
     await tabB.js(`document.getElementById('enter').click()`);
     await tabB.waitForJs(`!document.getElementById('view-lobby').classList.contains('hidden')`, 'lobby B');
+    await tabB.waitForJs(`document.getElementById('who').textContent.includes('Bo')`, 'tabB signed in as Bo');
+    check(true, 'a second tab in the same browser signs in under its own name');
     await tabB.waitForJs(`!!document.querySelector('#tables .tcard .tactions button.primary')`, 'table card visible to tabB');
     await tabB.js(`document.querySelector('#tables .tcard .tactions button.primary').click()`);
     await tabB.waitForJs(`!document.getElementById('view-table').classList.contains('hidden')`, 'table view B');
@@ -354,6 +361,204 @@ async function main() {
     await sleep(300);
     await tabA.shot('06-table-narrow');
     await tabA.cmd('Emulation.clearDeviceMetricsOverride');
+
+    /* ─── the competitive race, played in the real client ─────────────── */
+    console.log('\nthe race in the browser');
+    await tabA.js(`document.getElementById('btn-leave').click()`);
+    await tabA.waitForJs(`!document.getElementById('view-lobby').classList.contains('hidden')`, 'A stands up');
+    await tabB.js(`document.getElementById('btn-leave').click()`);
+    await tabB.waitForJs(`!document.getElementById('view-lobby').classList.contains('hidden')`, 'B stands up');
+
+    await tabA.js(`document.getElementById('table-name').value = 'Head to head';
+                   document.getElementById('table-diff').value = 'easy';
+                   document.getElementById('table-seats').value = '4';
+                   document.getElementById('table-mode').value = 'versus';
+                   document.getElementById('table-clock').value = '300000';
+                   document.querySelector('#create-form button[type=submit]').click();`);
+    const raceCard = `[...document.querySelectorAll('#tables .tcard')].find((c) => /Head to head/.test(c.textContent))`;
+    await tabB.waitForJs(`${raceCard} && /race/.test(${raceCard}.textContent)`, 'race card at B');
+    check(true, 'a race table is advertised in the lobby for everyone');
+    const cardBits = await tabB.js(`(() => {
+      const c = ${raceCard};
+      const tag = c.querySelector('.tag.versus');
+      return [tag.textContent, getComputedStyle(tag).color, c.querySelector('.tactions button.primary').textContent, /5 min clock/.test(c.textContent)];
+    })()`);
+    check(cardBits[0] === 'race' && cardBits[2] === 'Sit down', `the lobby card is badged and joinable (${cardBits[0]} / ${cardBits[2]})`);
+    check(cardBits[1] === 'rgb(242, 161, 164)', `the race tag is coloured like a warning (${cardBits[1]})`);
+    check(cardBits[3] === true, 'the lobby lists the round clock next to the race tag');
+
+    await tabB.js(`${raceCard}.querySelector('.tactions button.primary').click()`);
+    await tabB.waitForJs(`document.getElementById('t-name').textContent === 'Head to head'`, 'B at the race table');
+    check(/race \(5 min clock\)/.test(await tabB.js(`document.getElementById('t-meta').textContent`)), 'the table header names the mode and its clock');
+    await tabA.js(`${raceCard}.querySelector('.tactions button.primary').click()`);
+    await tabA.waitForJs(`document.getElementById('t-name').textContent === 'Head to head'`, 'A at the race table');
+    const seatNames = await tabA.js(`[...document.querySelectorAll('#seats .pline .nm')].map((e) => e.textContent)`);
+    check(seatNames[0] === 'Ana (you)' && seatNames[1] === 'Bo', `both racers are named apart (${seatNames.slice(0, 2).join(' / ')})`);
+    check(!(await tabA.js(`document.getElementById('score-panel').classList.contains('hidden')`)), 'a race shows a scoreboard panel');
+    check((await tabA.js(`document.querySelectorAll('#scores .scoreline').length`)) === 2, 'the scoreboard lists both racers');
+    check((await tabA.js(`[...document.querySelectorAll('#scores .pts')].every((e) => e.textContent === '0')`)) === true, 'both racers start on zero points');
+
+    /* the mode is optional: it can be flipped until the puzzle is dealt */
+    await tabA.js(`document.getElementById('t-mode').value = 'coop'; document.getElementById('t-mode').dispatchEvent(new Event('change'));`);
+    await tabB.waitForJs(`/co-op/.test(document.getElementById('t-meta').textContent) && document.getElementById('score-panel').classList.contains('hidden')`, 'co-op at B');
+    check(true, 'a race can be switched back to co-op before the puzzle is dealt');
+    await tabA.js(`document.getElementById('t-mode').value = 'versus'; document.getElementById('t-mode').dispatchEvent(new Event('change'));`);
+    await tabB.waitForJs(`/race \\(5 min clock\\)/.test(document.getElementById('t-meta').textContent)`, 'back to a race at B');
+    check(await tabB.js(`!document.getElementById('score-panel').classList.contains('hidden')`), 'switching to a race brings the scoreboard back');
+
+    await tabA.js(`document.getElementById('btn-start').click()`);
+    await tabA.waitForJs(`document.querySelectorAll('#board .cell.given').length > 0`, 'race dealt on A');
+    const raceClues = await tabA.js(`document.querySelectorAll('#board .cell.given').length`);
+    check(raceClues >= 25, `a race deals an ordinary puzzle (${raceClues} clues)`);
+    check(await tabA.js(`document.getElementById('mode-wrap').classList.contains('hidden') && document.getElementById('clock-wrap').classList.contains('hidden')`), 'mode and clock controls lock once the race is dealing');
+    const clockFirst = await tabA.js(`document.getElementById('timer').textContent`);
+    check(/^\d\d:\d\d left$/.test(clockFirst), `the round clock is counted down in the header (${clockFirst})`);
+
+    /* the board the race is being played on, solved here to know what is wrong */
+    const raceDigits = await tabA.js(`[...document.querySelectorAll('#board .cell .d')].map((e) => Number(e.textContent || 0))`);
+    const raceSol = sudoku.solve(raceDigits);
+    if (!raceSol) throw new Error('the race board is not solvable?!');
+    const raceEmpties = raceDigits.map((d, i) => (d ? -1 : i)).filter((i) => i >= 0);
+
+    /* a digit that does not fit: only the author hears about it, and it never lands */
+    await tabA.js(`window.__flash = false;
+                   new MutationObserver(() => { if (document.querySelector('#board .cell.reject')) window.__flash = true; })
+                     .observe(document.getElementById('board'), { childList: true, subtree: true, attributes: true, attributeFilter: ['class'] });`);
+    const badCell = raceEmpties[0];
+    const badDigit = raceSol[badCell] === 9 ? 1 : raceSol[badCell] + 1;
+    await tabA.js(`document.querySelectorAll('#board .cell')[${badCell}].click()`);
+    await tabA.key(String(badDigit));
+    await tabA.waitForJs(`/not a fit/.test(document.getElementById('toasts').innerText)`, 'the miss is explained to its author');
+    const missA = await tabA.js(`({
+      digit: document.querySelectorAll('#board .cell')[${badCell}].querySelector('.d').textContent,
+      pts: document.querySelector('#scores .scoreline.you .pts').textContent,
+      sub: document.querySelector('#scores .scoreline.you .sub').textContent,
+      flashed: window.__flash,
+      conflicts: document.querySelectorAll('#board .cell.conflict').length,
+    })`);
+    check(missA.digit === '' && missA.conflicts === 0, 'a rejected digit never reaches the shared board');
+    check(missA.pts === '-1', `a wrong digit costs its author a point (${missA.pts})`);
+    check(/miss/.test(missA.sub), `the scoreboard records the miss (${missA.sub})`);
+    check(missA.flashed === true, 'the cell flashes red for whoever guessed wrong');
+    await tabB.waitForJs(
+      `[...document.querySelectorAll('#scores .scoreline')].some((e) => /Ana/.test(e.textContent) && e.querySelector('.pts').textContent === '-1')`,
+      'Ana slips on Bo\'s scoreboard',
+      5000,
+    );
+    const missB = await tabB.js(`({
+      digit: document.querySelectorAll('#board .cell')[${badCell}].querySelector('.d').textContent,
+      feed: document.getElementById('feed').innerText + document.getElementById('toasts').innerText,
+      ana: [...document.querySelectorAll('#scores .scoreline')].find((e) => /Ana/.test(e.textContent)).querySelector('.pts').textContent,
+    })`);
+    check(missB.digit === '' && !/not a fit/.test(missB.feed), "Ana's miss is not broadcast to Bo's board or feed");
+    check(missB.ana === '-1', 'but the points are public, so Bo can see Ana slipping');
+
+    /* three digits in a row: two apiece plus the run bonus */
+    const goodCells = raceEmpties.slice(1, 4);
+    for (const i of goodCells) {
+      await tabA.js(`document.querySelectorAll('#board .cell')[${i}].click()`);
+      await tabA.key(String(raceSol[i]));
+    }
+    await tabA.waitForJs(`document.querySelector('#scores .scoreline.you .pts').textContent === '6'`, 'Ana banks a run', 8000);
+    const runA = await tabA.js(`({
+      sub: document.querySelector('#scores .scoreline.you .sub').textContent,
+      lead: document.getElementById('prog').textContent,
+      topRow: document.querySelector('#scores .scoreline').className,
+      digits: [...document.querySelectorAll('#board .cell .d')].filter((e) => e.textContent).length,
+    })`);
+    check(runA.digits === raceClues + goodCells.length, `every accepted digit sits on the shared board (${runA.digits} of ${raceClues + goodCells.length})`);
+    check(/run x3/.test(runA.sub), `the run of three shows on the board (${runA.sub})`);
+    check(/Ana leads on 6/.test(runA.lead), `the progress line names the leader (${runA.lead})`);
+    check(/lead/.test(runA.topRow), 'the leading score line is highlighted');
+
+    /* the other racer scores too, and the scoreboard is shared */
+    const boCell = raceEmpties[4];
+    await tabB.js(`document.querySelectorAll('#board .cell')[${boCell}].click()`);
+    await tabB.waitForJs(`document.querySelectorAll('#board .cell')[${boCell}].classList.contains('sel')`, 'Bo takes a cell');
+    await tabB.key(String(raceSol[boCell]));
+    await tabB.waitForJs(`document.querySelector('#scores .scoreline.you .pts').textContent === '2'`, "Bo scores at B", 8000);
+    try {
+      await tabA.waitForJs(`[...document.querySelectorAll('#scores .scoreline')].some((e) => /Bo/.test(e.textContent) && e.querySelector('.pts').textContent === '2')`, "Bo's points at A", 8000);
+    } catch (err) {
+      const probe = (tab, expr) => tab.js(expr);
+      console.log('   probe B:', JSON.stringify(await probe(tabB, `({ readout: document.getElementById('readout').textContent, toasts: document.getElementById('toasts').innerText, scores: document.getElementById('scores').innerText })`)));
+      console.log('   probe A:', JSON.stringify(await probe(tabA, `({ scores: document.getElementById('scores').innerText, prog: document.getElementById('prog').textContent })`)));
+      throw err;
+    }
+    check(true, "Bo's digit scores on Ana's scoreboard as well");
+
+    /* in a race a filled cell cannot be erased: nobody hands a point back */
+    await tabA.js(`document.querySelectorAll('#board .cell')[${goodCells[0]}].click(); document.getElementById('btn-erase').click();`);
+    await tabA.waitForJs(`/filled cells stay filled/.test(document.getElementById('toasts').innerText)`, 'erase refused in a race');
+    check(await tabA.js(`document.querySelectorAll('#board .cell')[${goodCells[0]}].querySelector('.d').textContent === '${raceSol[goodCells[0]]}'`), 'the scored digit stays where it was');
+    /* transient toasts from the miss/erase demos would sit over the panel in a shot */
+    await tabA.js(`document.getElementById('toasts').innerHTML = ''`);
+    await sleep(150);
+    await tabA.shot('09-race-table');
+
+    /* and it still fits a phone-width window */
+    await tabB.js(`document.getElementById('toasts').innerHTML = ''`);
+    await tabA.cmd('Emulation.setDeviceMetricsOverride', { width: 430, height: 900, deviceScaleFactor: 1, mobile: true });
+    await tabA.js(`document.getElementById('score-panel').scrollIntoView({ block: 'center' })`);
+    await sleep(400);
+    await tabA.shot('10-race-narrow');
+    const narrowBits = await tabA.js(`(() => {
+      const p = document.getElementById('score-panel').getBoundingClientRect();
+      const t = document.getElementById('timer');
+      const tr = t.getBoundingClientRect();
+      const size = parseFloat(getComputedStyle(t).fontSize);
+      const sub = document.querySelector('.board-head .sub').getBoundingClientRect();
+      const range = document.createRange();
+      range.selectNodeContents(t);
+      return {
+        panelFits: p.width > 0 && p.height > 0 && p.right <= 430,
+        panelInShot: p.top > 0 && p.bottom <= 900,
+        timerText: t.textContent,
+        timerLines: [...range.getClientRects()].filter((b) => b.width > 0).length,
+        timerInside: tr.left >= 0 && tr.right <= 430 && tr.width > 0,
+        timerClipped: t.scrollWidth > t.clientWidth + 1,
+        subRight: sub.right,
+      };
+    })()`);
+    check(narrowBits.panelFits, 'the scoreboard fits the narrow layout');
+    check(narrowBits.panelInShot, 'and the scoreboard is actually on screen at phone height');
+    check(narrowBits.timerLines === 1 && narrowBits.timerInside && !narrowBits.timerClipped,
+      `the round clock keeps its own line in the narrow header (${narrowBits.timerText}, ${narrowBits.timerLines} line box)`);
+    await tabA.cmd('Emulation.setDeviceMetricsOverride', { width: 1200, height: 900, deviceScaleFactor: 1, mobile: false });
+    await sleep(250);
+
+    /* finish the grid from one tab: the race ends with a league table */
+    const midDigits = await tabA.js(`[...document.querySelectorAll('#board .cell .d')].map((e) => Number(e.textContent || 0))`);
+    const midSol = sudoku.solve(midDigits);
+    if (!midSol) throw new Error('the mid-race board is not solvable?!');
+    const toGo = midDigits.map((d, i) => (d ? -1 : i)).filter((i) => i >= 0);
+    for (const i of toGo) {
+      await tabA.js(`document.querySelectorAll('#board .cell')[${i}].click()`);
+      await tabA.key(String(midSol[i]));
+    }
+    await tabA.waitForJs(`!document.getElementById('win').classList.contains('hidden')`, 'the race ends');
+    const winA = await tabA.js(`({
+      badge: document.getElementById('win-badge').textContent,
+      title: document.getElementById('win-title').textContent,
+      sub: document.getElementById('win-sub').textContent,
+      cls: document.getElementById('win-stats').className,
+      cells: [...document.querySelectorAll('#win-stats > div')].map((d) => d.textContent),
+    })`);
+    check(winA.badge === 'Race over', `the win badge changes for a race (${winA.badge})`);
+    check(/^Ana wins/.test(winA.title) && /that is you/.test(winA.title), `the winner is named to the winner (${winA.title})`);
+    check(/race with 2 racers/.test(winA.sub) && /grid completed/.test(winA.sub), `the card explains the race finish (${winA.sub})`);
+    check(winA.cls === 'win-stats versus', 'the win card swaps the co-op stats for a league table');
+    const league = (start) => winA.cells.slice(start, start + 6);
+    check(league(0).join('|') === '#|solver|points|best run|misses|hints', `league table header (${league(0).join(' / ')})`);
+    check(league(6)[0] === '1' && /^Ana/.test(league(6)[1]), `the leader sits on top (${league(6).join(' / ')})`);
+    check(league(12)[0] === '2' && /^Bo/.test(league(12)[1]), `the chaser sits below (${league(12).join(' / ')})`);
+    check(Number(league(12)[2]) === 2, `the chaser's points are right (${league(12)[2]})`);
+    await sleep(150);
+    await tabA.shotEl('11-race-standings', '#win .win-card');
+    await tabB.waitForJs(`!document.getElementById('win').classList.contains('hidden')`, 'race win at B');
+    const winB = await tabB.js(`({ title: document.getElementById('win-title').textContent, top: document.querySelectorAll('#win-stats > div')[7].textContent })`);
+    check(winB.title === 'Ana wins', "the loser's card still names Ana as the winner");
+    check(/^Ana/.test(winB.top) && !/you/.test(winB.top), 'and the standings flag Bo as the viewer, not Ana');
 
     const connA = await tabA.js(`document.getElementById('conn').textContent`);
     const connB = await tabB.js(`document.getElementById('conn').textContent`);

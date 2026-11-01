@@ -3,7 +3,8 @@
  * through the lobby (create / sit / seat numbers / join-by-code / full table),
  * soft locks, conflict detection, hints, chat replay, mid-game join, a full
  * cooperative solve by 5 players, an eight-seat table solved by 8 players,
- * restart, stand-up, and reconnect-with-token.
+ * restart, stand-up, and reconnect-with-token, plus the optional competitive
+ * race (per-digit scoring, rejected guesses, standings, and the round clock).
  *
  * Run with: npm test
  */
@@ -20,6 +21,7 @@ const WS_URL = `ws://127.0.0.1:${PORT}/ws`;
 
 let failures = 0;
 let checks = 0;
+const failedChecks = [];
 
 function check(cond, label) {
   checks++;
@@ -27,8 +29,19 @@ function check(cond, label) {
     console.log(`  ok   ${label}`);
   } else {
     failures++;
+    failedChecks.push(label);
     console.log(`  FAIL ${label}`);
   }
+}
+
+/* one place to print the tally, so failures always show up at the end too */
+function report() {
+  console.log(`\n${checks - failures}/${checks} checks passed`);
+  if (failedChecks.length) {
+    console.log('failed checks:');
+    for (const label of failedChecks) console.log(`  - ${label}`);
+  }
+  if (failures) process.exitCode = 1;
 }
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -380,14 +393,184 @@ async function main() {
     check(bigDone.players.every((p) => p.placements > 0), 'every seat contributed digits to the board');
     for (const c of bigCrew) c.close();
 
-    console.log(`\n${checks - failures}/${checks} checks passed`);
-    if (failures) {
-      console.log('SERVER LOG:\n' + serverOut);
-      process.exitCode = 1;
+    /* the race gets its own scope so its locals cannot clash with the co-op run */
+    await (async () => {
+    /* --- competitive mode: same board, validated digits, one winner --- */
+    console.log('\ncompetitive race');
+    const racers = [];
+    for (const nm of ['Rita', 'Vic', 'Wes']) {
+      const c = new Client(nm);
+      await c.open();
+      c.hello(nm);
+      c.playerId = (await c.waitFor('welcome', null, `welcome ${nm}`)).playerId;
+      racers.push(c);
     }
+    const [rita, vic, wes] = racers;
+    rita.send({ type: 'createTable', name: 'Race track', maxPlayers: 3, difficulty: 'easy', mode: 'versus', timeLimitMs: 0 });
+    const race = await rita.waitFor('table', (m) => m.table.name === 'Race track', 'race table');
+    check(race.table.mode === 'versus', 'table created in competitive mode');
+    check(race.table.timeLimitMs === 0, 'no clock asked for');
+    check(race.table.players.every((p) => p.score === 0 && p.streak === 0 && p.strikes === 0), 'racers start scoreless');
+    for (const c of racers.slice(1)) c.send({ type: 'sit', tableId: race.table.id });
+    const seatedRace = await rita.waitFor('table', (m) => m.table.players.length === 3, 'three racers seated');
+    check(seatedRace.table.mode === 'versus', 'the mode survives players sitting down');
+    await rita.waitFor('lobby', (m) => m.tables.some((t) => t.id === race.table.id && t.mode === 'versus'), 'lobby advertises the race');
+    check(true, 'the lobby shows which tables are races');
+
+    /* mode is optional, and switchable right up until the puzzle is dealt */
+    rita.send({ type: 'setRules', mode: 'coop', timeLimitMs: 0 });
+    const coopNow = await rita.waitFor('table', (m) => m.table.mode === 'coop', 'switched back to co-op');
+    check(coopNow.table.mode === 'coop', 'the race is opt-in and can be turned off before dealing');
+    rita.send({ type: 'setRules', mode: 'versus', timeLimitMs: 0 });
+    await rita.waitFor('table', (m) => m.table.mode === 'versus', 'back to a race');
+    rita.send({ type: 'start' });
+    const racePlay = await rita.waitFor('table', (m) => m.table.status === 'playing', 'race started');
+    const sol = sudoku.solve(racePlay.table.digits);
+    if (!sol) throw new Error('race puzzle is not solvable?!');
+    rita.send({ type: 'setRules', mode: 'coop', timeLimitMs: 0 });
+    const lockedRules = await rita.waitFor('error', (m) => /Rules can only change/.test(m.message), 'rules locked at the deal');
+    check(/Rules can only change/.test(lockedRules.message), 'mode and clock lock once the puzzle is dealt');
+
+    /* scoring */
+    const empties = racePlay.table.digits.map((d, i) => (d ? -1 : i)).filter((i) => i >= 0);
+    const goodCell = empties[0];
+    rita.send({ type: 'place', cell: goodCell, digit: sol[goodCell] });
+    const scored = (await rita.waitFor('table', (m) => m.table.players.some((p) => p.isYou && p.score > 0), 'points for a digit that fits')).table;
+    const ritaView = scored.players.find((p) => p.isYou);
+    check(ritaView.score >= 2 && ritaView.correct === 1 && ritaView.streak === 1, `a digit that fits scores (+${ritaView.score})`);
+    check(scored.digits[goodCell] === sol[goodCell], 'the scored digit sits on the shared board');
+
+    /* one racer's wrong digit never reaches the board and never leaks to peers */
+    const badCell = empties[1];
+    const badDigit = sol[badCell] === 9 ? 1 : sol[badCell] + 1;
+    vic.send({ type: 'place', cell: badCell, digit: badDigit });
+    const rejected = await vic.waitFor('reject', null, 'rejection sent to the author');
+    check(rejected.cell === badCell && rejected.points === 1, 'the author is told their digit was not a fit');
+    const afterMiss = (await vic.waitFor('table', (m) => m.table.players.some((p) => p.isYou && p.strikes === 1), 'miss counted')).table;
+    const vicView = afterMiss.players.find((p) => p.isYou);
+    check(vicView.score === -1 && vicView.wrong === 1 && vicView.streak === 0, `a wrong digit costs a point (${vicView.score})`);
+    check(afterMiss.digits[badCell] === 0, 'the wrong digit never reached the shared board');
+    check(afterMiss.conflicts.length === 0, 'a rejected digit cannot create a clash');
+    check(rita.count('reject') === 0 && wes.count('reject') === 0, 'nobody else at the table sees the miss');
+
+    /* guessing blindly must cost more than it pays */
+    const farmCell = empties[2];
+    for (let d = 1; d <= 9; d++) wes.send({ type: 'place', cell: farmCell, digit: d });
+    /* the last of the nine may be the hit, so wait for the board to prove it landed */
+    const brute = (await wes.waitFor('table', (m) => {
+      const p = m.table.players.find((x) => x.isYou);
+      return !!p && p.wrong === 8 && m.table.digits[farmCell] !== 0;
+    }, 'nine attempts on one cell', 15000)).table;
+    const wesView = brute.players.find((p) => p.isYou);
+    check(wesView.strikes === 8, `trying all nine digits took ${wesView.strikes} misses`);
+    check(wesView.score === -6, `brute-forcing one cell nets ${wesView.score} (+2 for the hit, -8 for the guesses)`);
+    check(brute.digits[farmCell] === sol[farmCell], 'the cell finally holds the right digit');
+
+    /* scored cells are permanent: no handing points back */
+    rita.send({ type: 'clear', cell: goodCell });
+    await rita.waitFor('error', (m) => /filled cells stay filled/.test(m.message), 'erase refused in a race');
+    await sleep(200);
+    check(rita.latest('table').table.digits[goodCell] === sol[goodCell], 'a scored cell cannot be erased to give a point back');
+
+    /* the shared hints still work, but pay nobody */
+    const scoreBeforeHint = rita.latest('table').table.players.find((p) => p.isYou).score;
+    rita.send({ type: 'hint' });
+    const hintSnap = (await rita.waitFor('table', (m) => m.table.hintsLeft === 2, 'hint spent in a race')).table;
+    const hintMe = hintSnap.players.find((p) => p.isYou);
+    check(hintMe.hintsUsed === 1 && hintMe.score === scoreBeforeHint, 'a hint reveals a digit but scores nothing');
+
+    /* finish the grid: the race ends with a league table */
+    const live = rita.latest('table').table;
+    const open = live.digits.map((d, i) => (d && !live.givens[i] ? -1 : i)).filter((i) => i >= 0);
+    open.forEach((cell, i) => racers[i % racers.length].send({ type: 'place', cell, digit: sol[cell] }));
+    const raceWin = await rita.waitFor('event', (m) => m.kind === 'win', 'race finished');
+    check(/wins with/.test(raceWin.text), `the race names a winner (${raceWin.text})`);
+    const finalRace = (await rita.waitFor('table', (m) => m.table.status === 'won' && !!m.table.standings, 'race standings')).table;
+    check(finalRace.endedBy === 'solved', 'completing the grid ends the race');
+    check(finalRace.standings[0].rank === 1 && finalRace.standings[0].score >= 2, 'the leader is ranked first');
+    check(finalRace.standings.every((st, i) => i === 0 || finalRace.standings[i - 1].score >= st.score), 'standings ordered by points');
+    check(finalRace.winnerIds.length === finalRace.standings.filter((st) => st.rank === 1).length, 'winnerIds matches rank one');
+    check(finalRace.standings.filter((st) => st.isYou).length === 1, 'the standings flag the viewer');
+    check(finalRace.mode === 'versus' && finalRace.timeLimitMs === 0 && finalRace.hintsLeft === 2, 'the final board keeps mode, clock and hint state');
+    check(finalRace.players.every((p) => p.selected === null), 'soft locks released when the race ends');
+
+    /* a re-deal wipes the scoreboard */
+    rita.send({ type: 'restart' });
+    const reset = (await rita.waitFor('table', (m) => m.table.status === 'playing' && m.table.filled === 0, 'fresh race round')).table;
+    check(reset.players.every((p) => p.score === 0 && p.strikes === 0 && p.streak === 0 && p.best === 0), 'a new puzzle clears the scoreboard');
+    check(reset.standings === null && reset.winnerIds.length === 0 && reset.endedBy === null, 'standings reset with the board');
+
+    /* the clock can end a race even if nobody finishes */
+    console.log('the race clock');
+    for (const c of racers.slice(1)) c.send({ type: 'leaveTable' });
+    await sleep(300);
+    rita.send({ type: 'leaveTable' });
+    await rita.waitFor('left', null, 'rita stood up');
+    rita.send({ type: 'createTable', name: 'Sprint', maxPlayers: 2, difficulty: 'easy', mode: 'versus', timeLimitMs: 10_000 });
+    const sprint = await rita.waitFor('table', (m) => m.table.name === 'Sprint', 'sprint table with a clock');
+    check(sprint.table.timeLimitMs === 10_000 && sprint.table.mode === 'versus',
+      `a short race clock is accepted (${sprint.table.timeLimitMs}ms)`);
+    rita.send({ type: 'start' });
+    const reStarted = await rita.waitFor('table', (m) => m.table.status === 'playing' && m.table.remainingMs !== null, 'clock ticking');
+    check(reStarted.table.remainingMs > 0 && reStarted.table.remainingMs <= reStarted.table.timeLimitMs,
+      `remaining time reported live (${reStarted.table.remainingMs}ms of ${reStarted.table.timeLimitMs}ms)`);
+    const clockTalk = rita.latest('event', (m) => /clock is/.test(m.text));
+    check(!!clockTalk && /the clock is 10s/.test(clockTalk.text),
+      `the round start spells the clock out in table talk (${clockTalk ? clockTalk.text : 'nothing said'})`);
+    const sol2 = sudoku.solve(reStarted.table.digits);
+    const firstOpen = reStarted.table.digits.findIndex((d) => !d);
+    rita.send({ type: 'place', cell: firstOpen, digit: sol2[firstOpen] });
+    await rita.waitFor('table', (m) => m.table.players.some((p) => p.isYou && p.score > 0), 'point banked before the bell');
+    const bell = await rita.waitFor('event', (m) => m.kind === 'win' && /Time up/.test(m.text), 'the clock ended the race', 30_000);
+    check(/Time up after/.test(bell.text), `the clock ends the round (${bell.text})`);
+    const ended = (await rita.waitFor('table', (m) => m.table.endedBy === 'timeout', 'timeout snapshot')).table;
+    check(ended.status === 'won' && ended.winnerIds.length === 1, 'the bell hands the win to the leader');
+    check(ended.standings[0].isYou && ended.standings[0].score >= 2, 'the only scorer is credited');
+    /* moving on to another table must not carry last table's numbers around */
+    wes.send({ type: 'leaveTable' });
+    await wes.waitFor('left', null, 'wes stood up');
+    wes.send({ type: 'createTable', name: 'Second shift', maxPlayers: 2, difficulty: 'easy', mode: 'versus' });
+    const second = (await wes.waitFor('table', (m) => m.table.name === 'Second shift', 'a second race')).table;
+    check(second.players.every((p) => p.placements === 0 && p.correct === 0 && p.wrong === 0 && p.hintsUsed === 0),
+      'standing up wipes the digits, misses and hints a player carried in');
+    vic.send({ type: 'sit', tableId: second.id });
+    await wes.waitFor('table', (m) => m.table.players.length === 2, 'vic follows into the second race');
+    wes.send({ type: 'start' });
+    const again = (await wes.waitFor('table', (m) => m.table.status === 'playing', 'second race started')).table;
+    check(again.players.every((p) => p.score === 0 && p.strikes === 0 && p.best === 0 && p.placements === 0),
+      'a fresh table starts every count at zero, including the racing ones');
+    const nextSol = sudoku.solve(again.digits);
+    const nextCell = again.digits.findIndex((d) => !d);
+    wes.send({ type: 'place', cell: nextCell, digit: nextSol[nextCell] });
+    const scoredAgain = (await wes.waitFor('table', (m) => {
+      const p = m.table.players.find((x) => x.isYou);
+      return !!p && p.score > 0;
+    }, 'scoring at the second table')).table;
+    const fresh = scoredAgain.players.find((p) => p.isYou);
+    check(fresh.correct === 1 && fresh.wrong === 0 && fresh.streak === 1 && fresh.strikes === 0,
+      "Wes's eight earlier misses do not follow him to the next table");
+    /* a clock left on a co-op table is dead weight: only races are timed */
+    rita.send({ type: 'leaveTable' });
+    await rita.waitFor('left', null, 'rita stands up from the sprint');
+    rita.send({ type: 'createTable', name: 'Timed co-op', maxPlayers: 2, difficulty: 'easy', mode: 'coop', timeLimitMs: 10_000 });
+    const coopClock = (await rita.waitFor('table', (m) => m.table.name === 'Timed co-op', 'co-op table carrying a clock')).table;
+    check(coopClock.mode === 'coop' && coopClock.timeLimitMs === 10_000, 'a co-op table can carry a clock number nobody uses');
+    rita.send({ type: 'start' });
+    const coopPlaying = (await rita.waitFor('table', (m) => m.table.status === 'playing', 'timed co-op started')).table;
+    check(coopPlaying.remainingMs === null, 'a co-op round is not counted down');
+    await sleep(11_000);
+    const stillOpen = rita.latest('table').table;
+    check(stillOpen.status === 'playing' && stillOpen.endedBy === null, 'the clock never blows the co-op round', stillOpen.status);
+    for (const c of racers) c.close();
+    })();
+
+    report();
+    if (failures) console.log('SERVER LOG:\n' + serverOut);
   } catch (err) {
     failures++;
+    failedChecks.push(`threw: ${err.message}`);
     console.error('\nTEST BLEW UP:', err.message);
+    report();
     console.log('SERVER LOG:\n' + serverOut);
     process.exitCode = 1;
   } finally {
