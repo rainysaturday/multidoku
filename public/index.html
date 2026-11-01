@@ -1,0 +1,161 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>SudokuCoop — solve it together</title>
+<link rel="stylesheet" href="/style.css" />
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='6' fill='%231b2430'/%3E%3Cg fill='%23e8eef6'%3E%3Crect x='7' y='7' width='6' height='6' rx='1'/%3E%3Crect x='19' y='7' width='6' height='6' rx='1'/%3E%3Crect x='13' y='19' width='6' height='6' rx='1' fill='%23f58742'/%3E%3C/g%3E%3C/svg%3E" />
+</head>
+<body>
+<header class="topbar">
+  <div class="brand"><span class="glyph">▦</span> Sudoku<span class="accent">Coop</span></div>
+  <div class="topbar-right">
+    <span id="who" class="who hidden"></span>
+    <span id="conn" class="conn">connecting…</span>
+  </div>
+</header>
+
+<main>
+  <!-- SIGN IN -->
+  <section id="view-signin" class="view">
+    <div class="card narrow">
+      <h1>Pull up a chair</h1>
+      <p class="lede">
+        One shared Sudoku grid, everyone at the table solving it together. Pick a table in the
+        lobby, take a seat, and start filling in cells — your moves are live for the whole table.
+      </p>
+      <label class="field">
+        <span>Name</span>
+        <input id="name" maxlength="22" placeholder="e.g. Sam" autocomplete="off" />
+      </label>
+      <button id="enter" class="primary big">Enter the lobby</button>
+      <ul class="facts">
+        <li><b>1–8</b> players per table</li>
+        <li><b>Soft locks</b> — a cell someone is editing is theirs</li>
+        <li><b>3 hints</b> shared by the whole table</li>
+      </ul>
+    </div>
+  </section>
+
+  <!-- LOBBY -->
+  <section id="view-lobby" class="view hidden">
+    <div class="row-between">
+      <h2>Lobby</h2>
+      <div class="join-code">
+        <input id="code" maxlength="4" placeholder="CODE" spellcheck="false" autocomplete="off" />
+        <button id="join-code">Join by code</button>
+      </div>
+    </div>
+
+    <form id="create-form" class="create card">
+      <label class="field grow">
+        <span>Table name</span>
+        <input id="table-name" maxlength="28" placeholder="Sunday morning grid" autocomplete="off" />
+      </label>
+      <label class="field">
+        <span>Seats</span>
+        <select id="table-seats">
+          <option>1</option><option selected>4</option><option>5</option><option>6</option><option>8</option>
+        </select>
+      </label>
+      <label class="field">
+        <span>Difficulty</span>
+        <select id="table-diff">
+          <option value="easy">easy</option>
+          <option value="medium" selected>medium</option>
+          <option value="hard">hard</option>
+        </select>
+      </label>
+      <button class="primary" type="submit">New table</button>
+    </form>
+
+    <div id="tables" class="tables"></div>
+    <p class="muted" id="lobby-note">No tables yet — make the first one.</p>
+  </section>
+
+  <!-- AT A TABLE -->
+  <section id="view-table" class="view hidden">
+    <div class="table-wrap">
+      <div class="board-col">
+        <div class="board-head">
+          <div>
+            <h2 id="t-name">table</h2>
+            <div class="sub"><span id="t-meta"></span> · code <code id="t-code">----</code></div>
+          </div>
+          <div class="head-right">
+            <div id="t-status" class="status"></div>
+            <div id="timer" class="timer">00:00</div>
+          </div>
+        </div>
+
+        <div id="board" class="board" aria-label="Sudoku board"></div>
+
+        <div class="pad">
+          <div class="pad-digits" id="pad-digits"></div>
+          <div class="pad-tools">
+            <button id="btn-notes" class="tool" title="Toggle pencil notes (N)">Notes <kbd>N</kbd></button>
+            <button id="btn-erase" class="tool" title="Erase cell (Backspace)">Erase <kbd>⌫</kbd></button>
+            <button id="btn-clearsel" class="tool" title="Deselect (Esc)">Deselect <kbd>esc</kbd></button>
+          </div>
+        </div>
+        <div class="cell-readout" id="readout">Click a cell to take it, then type a digit.</div>
+      </div>
+
+      <aside class="side">
+        <div class="panel">
+          <h3>Seats</h3>
+          <div id="seats" class="seats"></div>
+          <div class="panel-actions">
+            <button id="btn-start" class="primary">Start round</button>
+            <button id="btn-hint">Hint <span id="hint-count">3</span></button>
+            <button id="btn-restart">New puzzle</button>
+            <button id="btn-leave">Stand up</button>
+          </div>
+          <label class="field inline" id="diff-wrap">
+            <span>Difficulty (before the round starts)</span>
+            <select id="t-diff">
+              <option value="easy">easy</option>
+              <option value="medium">medium</option>
+              <option value="hard">hard</option>
+            </select>
+          </label>
+        </div>
+
+        <div class="panel">
+          <h3>Table progress</h3>
+          <div class="bar"><div id="bar" class="bar-fill"></div></div>
+          <div id="prog" class="prog"></div>
+        </div>
+
+        <div class="panel feed-panel">
+          <h3>Table talk</h3>
+          <div id="feed" class="feed"></div>
+          <form id="chat-form" class="chat-form">
+            <input id="chat-input" maxlength="200" placeholder="say something…" autocomplete="off" />
+            <button type="submit" class="primary">Send</button>
+          </form>
+        </div>
+      </aside>
+    </div>
+  </section>
+</main>
+
+<div id="toasts" class="toasts"></div>
+
+<div id="win" class="overlay hidden">
+  <div class="card narrow win-card">
+    <div class="win-badge">Solved together</div>
+    <h1 id="win-title">Puzzle complete</h1>
+    <p id="win-sub" class="lede"></p>
+    <div id="win-stats" class="win-stats"></div>
+    <div class="panel-actions">
+      <button id="btn-again" class="primary">Deal another puzzle</button>
+      <button id="btn-win-lobby">Back to the lobby</button>
+    </div>
+  </div>
+</div>
+
+<script type="module" src="/dist/client/client.js"></script>
+</body>
+</html>

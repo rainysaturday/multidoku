@@ -1,0 +1,28 @@
+{
+  "name": "sudoku-coop",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Cooperative multiplayer Sudoku: sit down at a table and solve the same grid together.",
+  "scripts": {
+    "build": "npm run build:server && npm run build:client",
+    "build:server": "tsc -p tsconfig.server.json",
+    "build:client": "tsc -p tsconfig.client.json",
+    "start": "node dist/server/index.js",
+    "dev:server": "tsx watch src/server/index.ts",
+    "dev:client": "tsc -p tsconfig.client.json --watch",
+    "test": "npm run build && node scripts/smoke-test.cjs",
+    "test:browser": "node scripts/browser-check.cjs",
+    "verify": "npm run build && node scripts/smoke-test.cjs && node scripts/browser-check.cjs"
+  },
+  "dependencies": {
+    "express": "^5.1.0",
+    "ws": "^8.18.3"
+  },
+  "devDependencies": {
+    "@types/express": "^5.0.1",
+    "@types/node": "^22.15.0",
+    "@types/ws": "^8.18.1",
+    "tsx": "^4.19.4",
+    "typescript": "^5.8.3"
+  }
+}

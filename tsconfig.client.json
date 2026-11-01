@@ -1,0 +1,13 @@
+{
+  "extends": "./tsconfig.base.json",
+  "compilerOptions": {
+    "module": "ES2022",
+    "moduleResolution": "bundler",
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "verbatimModuleSyntax": true,
+    "rootDir": "src",
+    "outDir": "public/dist",
+    "sourceMap": true
+  },
+  "include": ["src/client/**/*.ts", "src/shared/**/*.ts"]
+}
