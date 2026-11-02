@@ -1,0 +1,20 @@
+# Simple hosting: docker compose up -d
+# On a Raspberry Pi this is the whole deployment — pull or load the image, then start it.
+services:
+  sudoku-coop:
+    image: ${IMAGE:-sudoku-coop:latest}
+    build:
+      context: .
+      # Uncomment to bake a Pi target from another machine (64-bit Pi OS):
+      # platform: linux/arm64
+    container_name: sudoku-coop
+    ports:
+      - "${PORT:-8787}:8787"
+    environment:
+      HOST: 0.0.0.0
+      PORT: "8787"
+      # How long a seat is held for a player whose browser drops.
+      RECONNECT_GRACE_MS: "${RECONNECT_GRACE_MS:-180000}"
+    restart: unless-stopped
+    # Games live in memory only, so a restart just clears the tables — no volumes needed.
+    mem_limit: 128m

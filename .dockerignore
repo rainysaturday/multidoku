@@ -1,0 +1,15 @@
+# Keep the build context small: the image is built from src + configs only.
+
+.git
+.gitignore
+node_modules
+dist
+public/dist
+screenshots
+scripts
+README.md
+Dockerfile
+.dockerignore
+docker-compose.yml
+\*.log
+.DS_Store
