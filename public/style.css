@@ -133,7 +133,7 @@ button.big { padding: .65rem 1rem; width: 100%; margin-top: .8rem; }
 .board {
   display: grid; grid-template-columns: repeat(9, 1fr);
   width: 100%; max-width: 540px; aspect-ratio: 1 / 1;
-  border: 2px solid #93a9c0; border-radius: 8px; overflow: hidden;
+  border: 2px solid #93a9c0; overflow: hidden; /* square corners all the way round */
   background: #141d28;
 }
 .cell {
@@ -147,8 +147,17 @@ button.big { padding: .65rem 1rem; width: 100%; margin-top: .8rem; }
 .cell.box-col-end { border-right: 3px solid #93a9c0; }
 .cell.box-row-end { border-bottom: 3px solid #93a9c0; }
 .cell:hover { background: #223042; }
-.cell .d { font-size: clamp(15px, 3.4vw, 25px); font-weight: 650; line-height: 1; }
-.cell.given .d { color: var(--fg); font-weight: 750; }
+/* Digits are drawn from square-cornered bars by client.ts, not typeset: at cell size a
+   normal face's rounded corners go soft. The value stays in the DOM as hidden text. */
+.cell .d { position: relative; font-size: clamp(15px, 3.4vw, 25px); line-height: 1; }
+.cell .glyph { display: block; fill: currentColor; shape-rendering: crispEdges; }
+.cell .d .glyph { width: .78em; height: 1.1em; }
+.cell .notes .glyph { width: .72em; height: 1.05em; }
+.cell .digit-value {
+  position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0;
+  overflow: hidden; clip-path: inset(50%); white-space: nowrap;
+}
+.cell.given .d { color: var(--fg); }
 .cell.filled .d { color: var(--c, var(--fg)); }
 .cell.conflict { background: rgba(229, 72, 77, .22); }
 .cell.conflict .d { color: #ffb3b6 !important; }
@@ -175,7 +184,7 @@ button.big { padding: .65rem 1rem; width: 100%; margin-top: .8rem; }
 }
 .cell .notes {
   position: absolute; inset: 3px; display: grid; grid-template-columns: repeat(3, 1fr);
-  place-items: center; font-size: clamp(7px, 1.5vw, 10px); color: var(--fg-dim); line-height: 1.1;
+  place-items: center; font-size: clamp(9px, 1.9vw, 12px); color: var(--fg-dim); line-height: 1.1;
   pointer-events: none;
 }
 .cell.done .who-badge { opacity: .55; }

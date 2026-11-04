@@ -240,8 +240,14 @@ async function main() {
     await sleep(1200);
     await tabA.shot('04-round-started');
 
-    /* Ana takes an empty cell -> Bo's tab shows it locked */
-    const cellIndex = await tabA.js(`[...document.querySelectorAll('#board .cell')].findIndex(c => !c.classList.contains('given') && !c.querySelector('.d').textContent)`);
+    /* Ana takes an empty cell -> Bo's tab shows it locked. Pick one whose row carries a
+       clue, so the clash below is always reachable whatever puzzle was dealt. */
+    const cellIndex = await tabA.js(`(() => {
+      const cells = [...document.querySelectorAll('#board .cell')];
+      const clueInRow = (r) => [...Array(9).keys()].some((c) => cells[r * 9 + c].classList.contains('given'));
+      return cells.findIndex((c, i) =>
+        !c.classList.contains('given') && !c.querySelector('.d').textContent && clueInRow(Math.floor(i / 9)));
+    })()`);
     await tabA.js(`document.querySelectorAll('#board .cell')[${cellIndex}].click()`);
     await tabB.waitForJs(`document.querySelectorAll('#board .cell.taken').length >= 1`, 'lock on B');
     check(true, "a cell Ana selects shows up as taken in Bo's tab");
@@ -266,6 +272,27 @@ async function main() {
     await tabB.waitForJs(`[...document.querySelectorAll('#board .cell .d')].filter(e => e.textContent === '${clash.digit}').length >= 1`, 'digit on B');
     check(true, 'typing a digit appears on the other player board');
 
+
+    /* the digits are drawn from square-cornered bars, not typeset in the UI face */
+    const drawn = await tabA.js(`(() => {
+      const paths = [...document.querySelectorAll('#board .cell .d svg.glyph path')];
+      const filled = [...document.querySelectorAll('#board .cell .d')].filter((e) => e.textContent).length;
+      return {
+        painted: paths.length,
+        filled,
+        curved: paths.filter((p) => /[cCsSqQtTaA]/.test(p.getAttribute('d'))).length,
+        slanted: paths.filter((p) => /[lLdD]/.test(p.getAttribute('d'))).length,
+        clues: document.querySelectorAll('#board .cell.given').length,
+        clueGlyphs: document.querySelectorAll('#board .cell.given svg.glyph').length,
+        readable: [...document.querySelectorAll('#board .cell .d .digit-value')].every((e) => /^[1-9]$/.test(e.textContent)),
+      };
+    })()`);
+    check(drawn.filled > 0 && drawn.painted === drawn.filled,
+      `every digit on the board is drawn, not typeset (${drawn.painted} glyphs / ${drawn.filled} filled cells)`);
+    check(drawn.clueGlyphs === drawn.clues, `the given clues use the drawn digits too (${drawn.clueGlyphs}/${drawn.clues})`);
+    check(drawn.curved === 0 && drawn.slanted === 0,
+      `digit bars are strictly horizontal and vertical, so every corner is square (${drawn.curved} curved, ${drawn.slanted} slanted segments)`);
+    check(drawn.readable, 'the digit value stays in the DOM as text, so it is still selectable and read out');
     /* the duplicate must be highlighted the same way on both boards */
     const clashStart = Date.now();
     await tabA.waitForJs(`document.querySelectorAll('#board .cell.conflict').length >= 2`, 'clash painted on A too');
@@ -302,6 +329,9 @@ async function main() {
     await tabA.key('5');
     await tabB.waitForJs(`[...document.querySelectorAll('#board .cell .notes span')].filter(s => s.textContent).length >= 2`, 'pencil marks on B');
     check(true, 'shared pencil marks render for everyone');
+    const noteGlyphs = await tabA.js(`document.querySelectorAll('#board .cell .notes svg.glyph path').length`);
+    check(noteGlyphs >= 2, `the shared pencil marks are drawn square as well (${noteGlyphs} note glyphs)`);
+    await tabB.shotEl('12-notes-on-board', '#board');
     await tabA.js(`document.getElementById('btn-notes').click(); document.getElementById('btn-erase').click()`);
     await tabB.waitForJs(`[...document.querySelectorAll('#board .cell .notes span')].filter(s => s.textContent).length === 0`, 'notes erased');
     check(true, 'erase clears the notes');

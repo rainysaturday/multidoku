@@ -308,6 +308,55 @@ const LOCK_SVG =
   '<path d="M7.5 10V7.5a4.5 4.5 0 0 1 9 0V10" fill="none" stroke="currentColor" stroke-width="2.4"/>' +
   '<rect x="4.5" y="10" width="15" height="11" rx="2.5" fill="currentColor"/></svg>';
 
+/**
+ * Cell digits are *drawn*, not typeset. The UI face's soft, rounded corners collapse
+ * into mush at cell size, so every digit is painted from square-cornered bars: ten
+ * straight segments on a 100×140 box, joined at right angles only.
+ */
+const SEGMENTS: Record<string, string> = {
+  A: 'M0 0h100v18H0z', /* top */
+  B: 'M82 0h18v79H82z', /* upper right */
+  C: 'M82 61h18v79H82z', /* lower right */
+  D: 'M0 122h100v18H0z', /* bottom */
+  E: 'M0 61h18v79H0z', /* lower left */
+  F: 'M0 0h18v79H0z', /* upper left */
+  G: 'M0 61h100v18H0z', /* middle */
+  K: 'M22 0h19v18H22z', /* flat flag, squares off the 1 */
+  I: 'M41 0h18v140H41z', /* centred stem */
+};
+
+const DIGIT_BARS: Record<string, string> = {
+  '1': 'IK',
+  '2': 'ABGED',
+  '3': 'ABGCD',
+  '4': 'FGBC',
+  '5': 'AFGCD',
+  '6': 'ACDEFG',
+  '7': 'ABC',
+  '8': 'ABCDEFG',
+  '9': 'ABCDFG',
+};
+
+/** The nine digit glyphs, drawn once (they never change). */
+const DIGIT_SVG: Record<string, string> = Object.fromEntries(
+  Object.entries(DIGIT_BARS).map(([digit, bars]) => [
+    digit,
+    `<svg class="glyph" viewBox="0 0 100 140" aria-hidden="true" focusable="false">` +
+      `<path d="${bars.split('').map((bar) => SEGMENTS[bar]!).join(' ')}"/></svg>`,
+  ]),
+);
+
+/**
+ * Paint a digit into an element: the square-cornered drawing is what you see, while the
+ * value stays in the DOM as text (screen readers and the browser checks read it).
+ */
+function paintDigit(el: HTMLElement, digit: number | string): void {
+  const value = String(digit);
+  const glyph = DIGIT_SVG[value];
+  /* 0 (an empty cell) has no glyph, so the cell is simply cleared */
+  el.innerHTML = glyph ? `${glyph}<span class="digit-value">${value}</span>` : '';
+}
+
 function buildBoard(): void {
   const board = $('board');
   board.innerHTML = '';
@@ -589,7 +638,7 @@ function renderBoard(): void {
     }
 
     const [notesEl, dEl, badge, lock] = Array.from(el.children) as HTMLElement[];
-    dEl.textContent = digit ? String(digit) : '';
+    paintDigit(dEl, digit);
     notesEl.textContent = '';
     if (!digit && t.notes[i]) {
       const mask = t.notes[i];
@@ -597,7 +646,7 @@ function renderBoard(): void {
       for (let dgt = 1; dgt <= 9; dgt++) cells.push(mask & (1 << (dgt - 1)) ? String(dgt) : '');
       notesEl.replaceChildren(...cells.map((c) => {
         const s = document.createElement('span');
-        s.textContent = c;
+        if (c) paintDigit(s, c);
         return s;
       }));
     }
