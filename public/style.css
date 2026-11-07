@@ -1,4 +1,5 @@
 :root {
+  color-scheme: dark; /* native controls, scrollbars and the paint-before-CSS flash */
   --bg: #0f151d;
   --bg-soft: #151d27;
   --bg-card: #1a2431;

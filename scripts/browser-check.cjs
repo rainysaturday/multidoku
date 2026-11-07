@@ -322,15 +322,20 @@ async function main() {
     await tabA.waitForJs(`/box 7/.test(document.getElementById('feed').innerText)`, 'chat at A');
     check(true, 'table talk reaches the other player');
 
-    /* notes + erase still work */
-    const emptyCell = await tabA.js(`[...document.querySelectorAll('#board .cell')].findIndex(c => !c.classList.contains('given') && !c.querySelector('.d').textContent)`);
+    /* notes + erase still work. The mark has to come back to the tab that typed it
+       before anything is judged: both tabs get their own snapshot, and the sender is
+       usually the last one to repaint, so counting straight after the *other* tab
+       updated is a race. */
+    const emptyCell = await tabA.js(`[...document.querySelectorAll('#board .cell')].findIndex(c => !c.classList.contains('given') && !c.querySelector('.d').textContent && !c.querySelector('.notes span'))`);
     await tabA.js(`document.querySelectorAll('#board .cell')[${emptyCell}].click(); document.getElementById('btn-notes').click();`);
     await tabA.key('4');
     await tabA.key('5');
-    await tabB.waitForJs(`[...document.querySelectorAll('#board .cell .notes span')].filter(s => s.textContent).length >= 2`, 'pencil marks on B');
-    check(true, 'shared pencil marks render for everyone');
+    await tabA.waitForJs(`document.querySelectorAll('#board .cell .notes svg.glyph path').length >= 2`, 'pencil marks back at A');
+    check(await tabB.waitForJs(`[...document.querySelectorAll('#board .cell .notes span')].filter(s => s.textContent).length >= 2`, 'pencil marks on B'), 'shared pencil marks render for everyone');
     const noteGlyphs = await tabA.js(`document.querySelectorAll('#board .cell .notes svg.glyph path').length`);
     check(noteGlyphs >= 2, `the shared pencil marks are drawn square as well (${noteGlyphs} note glyphs)`);
+    const noteGlyphsB = await tabB.js(`document.querySelectorAll('#board .cell .notes svg.glyph path').length`);
+    check(noteGlyphsB >= 2, `and the other tab draws them the same way (${noteGlyphsB} note glyphs)`);
     await tabB.shotEl('12-notes-on-board', '#board');
     await tabA.js(`document.getElementById('btn-notes').click(); document.getElementById('btn-erase').click()`);
     await tabB.waitForJs(`[...document.querySelectorAll('#board .cell .notes span')].filter(s => s.textContent).length === 0`, 'notes erased');
@@ -596,6 +601,106 @@ async function main() {
 
     const clientErrors = [...tabA.exceptions, ...tabB.exceptions, ...tabA.consoleErrors, ...tabB.consoleErrors];
     check(clientErrors.length === 0, `no client-side JS errors${clientErrors.length ? ` (${clientErrors.slice(0, 3).join(' | ')})` : ''}`);
+
+    /* ---- installable as an app: what the browser itself sees ---- */
+    /* client.ts registers /sw.js at boot, so a worker should be live by now. */
+    const sw = await tabA.js(`(async () => {
+      const reg = await Promise.race([
+        navigator.serviceWorker.ready,
+        new Promise((resolve) => setTimeout(() => resolve(null), 8000)),
+      ]);
+      if (!reg) return { ready: false };
+      const keys = await caches.keys();
+      const shell = ['/', '/index.html', '/style.css', '/dist/client/client.js', '/manifest.webmanifest'];
+      let held = 0;
+      for (const key of keys) {
+        const cache = await caches.open(key);
+        held += (await Promise.all(shell.map((u) => cache.match(u)))).filter(Boolean).length;
+      }
+      return {
+        ready: true,
+        scope: reg.scope,
+        active: !!reg.active,
+        controlling: !!navigator.serviceWorker.controller,
+        caches: keys,
+        held,
+        needed: shell.length,
+      };
+    })()`);
+    check(sw.ready && sw.active, 'the client registers the service worker');
+    check(sw.scope === `${BASE}/`, `the worker is scoped to the whole site (${sw.scope})`);
+    check(sw.controlling, 'and it controls the open page');
+    check(sw.held >= sw.needed, `the app shell is cached (${sw.held}/${sw.needed} shell files on disk)`);
+    check(sw.caches.some((k) => k.startsWith('sudoku-coop')), `the cache is versioned (${sw.caches.join(', ')})`);
+
+    /* The manifest only counts if the browser can fetch and read what the page
+       advertises, so do that from inside the page, through its own <link>.
+       Chromium's own CDP probes are deliberately NOT used here: under headless
+       Page.getAppManifest never fetches the manifest (empty url and data) and
+       Page.getInstallabilityErrors just answers "in-incognito", so they tell us
+       nothing about this app. */
+    const man = await tabA.js(`(async () => {
+      const link = document.querySelector('link[rel=manifest]');
+      if (!link) return { error: 'the page has no <link rel="manifest">' };
+      const res = await fetch(link.href);
+      if (!res.ok) return { error: 'the manifest came back ' + res.status };
+      const type = res.headers.get('content-type') || 'unknown';
+      let json = null;
+      try { json = await res.json(); } catch (e) { return { error: 'the manifest is not parseable: ' + e }; }
+      const icons = [];
+      for (const icon of json.icons || []) {
+        const r = await fetch(new URL(icon.src, link.href).href);
+        icons.push({ src: icon.src, status: r.status, type: r.headers.get('content-type') || 'unknown' });
+      }
+      return { href: link.href, type, json, icons };
+    })()`);
+    check(!man.error && man.href === `${BASE}/manifest.webmanifest`, `the page links a manifest the browser can fetch${man.error ? ` (${man.error})` : ''}`);
+    check(!man.error && /^application\/manifest\+json/.test(man.type), `and serves it as a manifest (${man.type})`);
+    const manMissing = man.error ? [] : ['name', 'short_name', 'start_url', 'scope', 'display', 'icons'].filter((k) => !(k in man.json));
+    check(manMissing.length === 0, `the parsed manifest carries name, short_name, start_url, scope, display and icons${manMissing.length ? ` (no ${manMissing.join(', ')})` : ''}`);
+    check(!man.error && man.json.display === 'standalone', `an installed window opens with no browser chrome (display: ${man.json?.display})`);
+    check(!man.error && man.json.start_url === '/' && man.json.scope === '/', `the installed app owns the whole site (start_url ${man.json?.start_url}, scope ${man.json?.scope})`);
+    check(!man.error && man.json.theme_color === await tabA.js(`document.querySelector('meta[name=theme-color]').content`), 'the manifest colour matches the page theme-color');
+    const iconStatus = man.error ? '' : man.icons.map((i) => `${i.src}=${i.status} ${i.type}`).join(', ');
+    check(!man.error && man.icons.length > 0 && man.icons.every((i) => i.status === 200 && /^image\//.test(i.type)), `every icon the manifest offers is fetchable (${iconStatus})`);
+    check(!man.error && man.json.icons.some((i) => (i.sizes || '').includes('512')), 'a 512px icon is offered (Android needs one to install)');
+    check(!man.error && man.json.icons.some((i) => (i.purpose || '').includes('maskable')), 'a maskable icon is offered (launchers crop icons to a shape)');
+
+    /* ---- and the offline part of progressive: pull the network, reload ---- */
+    await tabA.cmd('Network.enable');
+    await tabA.cmd('Network.emulateNetworkConditions', { offline: true, latency: 0, downloadThroughput: -1, uploadThroughput: -1 });
+    try {
+      await tabA.cmd('Page.navigate', { url: `${BASE}/?opened-offline` });
+      await tabA.waitForJs(`document.querySelectorAll('#board .cell').length === 81`, 'the board draws with no network');
+      check(true, 'the app still opens with no network at all: the worker serves the saved shell');
+      await tabA.waitForJs(`/disconnected/.test(document.getElementById('conn').textContent)`, 'the app notices the table is unreachable');
+      const offline = await tabA.js(`({
+        conn: document.getElementById('conn').textContent,
+        cls: document.getElementById('conn').className,
+        title: document.title,
+        cells: document.querySelectorAll('#board .cell').length,
+      })`);
+      check(/disconnected/.test(offline.conn) && /bad/.test(offline.cls), `and it says so plainly (${offline.conn})`);
+      await tabA.shot('13-offline-shell');
+      const cachedOffline = await tabA.js(`(async () => {
+        const out = [];
+        for (const url of ['/manifest.webmanifest', '/icons/icon-192.png', '/icons/icon-maskable-512.png', '/style.css']) {
+          try { const r = await fetch(url); out.push(url + '=' + r.status); }
+          catch (e) { out.push(url + '=unreachable'); }
+        }
+        return out;
+      })()`);
+      check(cachedOffline.every((c) => c.endsWith('=200')), `with no network the manifest and icons still come off disk (${cachedOffline.join(' ')})`);
+    } catch (err) {
+      check(false, `the offline shell failed to load (${err.message})`);
+    } finally {
+      await tabA.cmd('Network.emulateNetworkConditions', { offline: false, latency: 0, downloadThroughput: -1, uploadThroughput: -1 });
+      await tabA.cmd('Network.disable');
+    }
+    /* the offline leg drops the websocket on purpose, so only page exceptions are
+       judged here — the browser's own net::ERR_ noise is not a page error */
+    check(tabA.exceptions.length === 0, `opening offline throws nothing in the page${tabA.exceptions.length ? ` (${tabA.exceptions[0]})` : ''}`);
+    await sleep(300);
 
     console.log(`\n${checks - failures}/${checks} browser checks passed`);
     if (failures) console.log('SERVER LOG:\n' + serverOut);

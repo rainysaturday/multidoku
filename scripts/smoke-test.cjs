@@ -148,6 +148,30 @@ async function main() {
     const css = await fetch(`${BASE}/style.css`);
     check(css.ok, 'GET /style.css serves styles');
     const js = await fetch(`${BASE}/dist/client/client.js`);
+
+    /* the installable-app bits, at the HTTP level: right files, right types */
+    const manifestRes = await fetch(`${BASE}/manifest.webmanifest`);
+    check(manifestRes.ok && /application\/manifest\+json/.test(manifestRes.headers.get('content-type') ?? ''),
+      'GET /manifest.webmanifest serves the manifest with the manifest MIME type');
+    const htmlHasManifest = html.includes('rel="manifest"') && html.includes('/manifest.webmanifest');
+    check(htmlHasManifest, 'the page links the manifest');
+    const man = JSON.parse(await manifestRes.text());
+    check(!!man.name && !!man.short_name, `the manifest names the app (${man.short_name})`);
+    check(man.start_url === '/' && man.scope === '/' && man.display === 'standalone',
+      'the manifest starts standalone inside its own scope');
+    const iconList = (man.icons ?? []).map((i) => `${i.sizes}${i.purpose === 'maskable' ? ' maskable' : ''}`);
+    check(iconList.includes('192x192') && iconList.includes('512x512') && iconList.includes('512x512 maskable'),
+      `it ships 192, 512 and maskable icons (${iconList.join(', ')})`);
+    for (const icon of man.icons ?? []) {
+      const res = await fetch(`${BASE}${icon.src}`);
+      const kind = res.headers.get('content-type') ?? '';
+      check(res.ok && kind.startsWith('image/'), `manifest icon ${icon.src} serves as ${kind || 'nothing'}`);
+    }
+    const swRes = await fetch(`${BASE}/sw.js`);
+    check(swRes.ok && /javascript/.test(swRes.headers.get('content-type') ?? ''), 'GET /sw.js serves the service worker as JS');
+    const swSource = await swRes.text();
+    check(/addEventListener\(\s*['"]fetch['"]/.test(swSource), 'the service worker handles fetch, which installability requires');
+    check(html.includes('name="theme-color"') && html.includes('apple-touch-icon'), 'the page carries the theme colour and an iOS icon');
     check(js.ok, 'GET /dist/client/client.js serves the client bundle');
 
     console.log('\nlobby');

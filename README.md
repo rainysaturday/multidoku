@@ -11,6 +11,9 @@ server scores every digit and one person wins.
 - Tables seat 1–8; join from the lobby list, by seat number, or with a 4-letter code.
 - Two modes per table: **co-operative** (default) or a **competitive race**, chosen in the
   lobby and switchable until the puzzle is dealt.
+- Installable: it ships a web app manifest, icons and a service worker, so you can add it
+  to a home screen and the sign-in screen still opens with the network gone (the game
+  itself needs the server — Sudoku without a shared grid is just a lonely puzzle).
 
 ## Run it
 
@@ -34,6 +37,29 @@ npm run dev:client
 
 Environment: `PORT` (8787), `HOST` (0.0.0.0), `RECONNECT_GRACE_MS` (180000 — how long a
 seat is held for a player whose browser drops).
+
+## Install it as an app
+
+The page links `/manifest.webmanifest` and registers `/sw.js`, so Chromium and Firefox offer
+**Install app** (address-bar icon, or the share menu on iOS) and Android/iOS home-screen
+shortcuts work. Installed, it opens in its own window with no browser chrome.
+
+```bash
+npm run icons        # regenerates public/icons/* from one geometry source
+```
+
+Two things to know before an install works:
+
+- **Browsers insist on a secure context.** `http://localhost` and `http://127.0.0.1` count
+  as secure, so installing from a laptop works. A phone reaching the Pi over the LAN gets a
+  plain `http://192.168.x.x` origin, which is *not* secure: no service worker, no install.
+  Put the Pi behind HTTPS — a reverse proxy with a certificate, or a tunnel — and everything
+  lights up. The app itself plays happily over plain HTTP; only the install/offline part
+  needs TLS.
+- **`public/sw.js` must stay at the site root.** A service worker can only control the
+  directory it is served from and below, so it is plain JavaScript served from `/` rather
+  than TypeScript compiled into `public/dist/`. Keep the `VERSION` string in it in step with
+  a deploy when you want every open tab to pick the new shell immediately.
 
 ## Docker (and running it on a Raspberry Pi)
 
@@ -146,8 +172,9 @@ hints and points never follow you between tables.
 ## Tests
 
 ```bash
-npm test              # 99 checks: protocol, lobby/seats/locks/hints/chat/solve/reconnect/race
-npm run test:browser  # 80 checks: real client driven in headless Chromium, writes screenshots/
+npm test              # 111 checks: protocol, lobby/seats/locks/hints/chat/solve/reconnect/race,
+                      #              and the installable files (manifest, worker, icons)
+npm run test:browser  # 104 checks: real client driven in headless Chromium, writes screenshots/
 npm run verify        # both
 ```
 
@@ -169,7 +196,15 @@ race: creating it from the lobby form, the race tag and clock on the card, the s
 panel, a wrong digit rejected only to its author (flash + toast, nothing on the other
 board), a run of three paying its bonus, the leader line, a refused erase, the narrow-layout
 scoreboard, and the league table on the win card. It captures `screenshots/*.png`
-and fails if either tab throws a JS error.
+and fails if either tab throws a JS error. A final pass checks the app is installable from
+inside the page: the service worker is live, scoped to `/` and controlling the tab, the five
+shell files sit in a versioned cache, the `<link rel=manifest>` target arrives as
+`application/manifest+json` and parses with `display: standalone` and fetchable icons, and
+then — with the network switched off entirely — the app reloads off the cache, builds its
+81-cell board and lands on the sign-in screen, header reading `disconnected`, throwing
+nothing. Chromium's own CDP manifest probes
+(`Page.getAppManifest`, `Page.getInstallabilityErrors`) are deliberately not used: under
+headless they never fetch the manifest and answer `in-incognito`, so they prove nothing.
 
 ## Layout
 
@@ -181,7 +216,11 @@ src/server/index.ts    HTTP + WS hub: dispatch, per-player snapshots, lobby, cle
 src/client/client.ts   the whole browser app (views, board renderer, input, reconnect)
 public/index.html      three views: sign-in, lobby, at-a-table (+ win overlay)
 public/style.css       dark theme, sudoku grid with emphasised 3×3 blocks
+public/manifest.webmanifest  name, icons, standalone display, / scope
+public/sw.js           app-shell cache (plain JS: a worker must be served from /)
+public/icons/          svg + 32/192/512/maskable-512/apple-touch PNGs
 scripts/               smoke-test.cjs (protocol), browser-check.cjs (CDP UI test),
+                       make-icons.cjs (regenerates the icon set),
                        build-docker.sh (image build, incl. Pi targets)
 Dockerfile             multi-stage build: compiled app + prod deps only, non-root
 docker-compose.yml     one-service hostable deployment (restart: unless-stopped)
@@ -189,6 +228,11 @@ docker-compose.yml     one-service hostable deployment (restart: unless-stopped)
 
 ### Design notes
 
+- **The service worker caches assets, never a snapshot.** Assets are served network-first
+  with the cache as fallback, because nothing in `public/` is content-hashed — precaching
+  them would pin an old bundle to every installed device across a deploy. Navigations fall
+  back to the cached shell, so the installed app opens offline and then fails the websocket
+  connect out loud instead of pretending to be playable.
 - **Puzzles are unique.** A random complete grid is generated, then clues are removed one
   by one; each removal is kept only if a bitmask + minimum-remaining-values backtracker
   still finds exactly one solution. Checks that run past a 60 ms budget abandon and keep

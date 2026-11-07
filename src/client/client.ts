@@ -970,6 +970,27 @@ document.addEventListener('keydown', (e: KeyboardEvent) => {
 });
 
 /* ------------------------------------------------------------------ */
+/* progressive web app                                                */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Register the service worker. A manifest plus a worker with a fetch handler is
+ * what makes browsers offer "install app", and it is also what lets the shell
+ * open with no network at all. It is pure decoration: a worker that fails to
+ * register changes nothing about play.
+ *
+ * Service workers only run in a secure context, so a plain http://192.168.x.x
+ * host on the LAN skips this quietly instead of logging a rejection — the site
+ * still works, it just cannot be installed from an insecure origin.
+ */
+function registerServiceWorker(): void {
+  if (!('serviceWorker' in navigator) || !window.isSecureContext) return;
+  window.addEventListener('load', () => {
+    navigator.serviceWorker.register('/sw.js').catch(() => undefined);
+  });
+}
+
+/* ------------------------------------------------------------------ */
 /* boot                                                               */
 /* ------------------------------------------------------------------ */
 
@@ -977,3 +998,4 @@ buildBoard();
 showView();
 if (app.name) ($('name') as HTMLInputElement).value = app.name;
 connect();
+registerServiceWorker();

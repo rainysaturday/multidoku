@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512" role="img">
+  <title>SudokuCoop</title>
+  <rect width="512" height="512" fill="#0f151d"/>
+  <g>    <rect x="96" y="96" width="96" height="96" fill="#c2d1e1"/>
+      <rect x="208" y="96" width="96" height="96" fill="#c2d1e1"/>
+      <rect x="96" y="208" width="96" height="96" fill="#c2d1e1"/>
+      <rect x="208" y="208" width="96" height="96" fill="#f58742"/>
+      <rect x="320" y="208" width="96" height="96" fill="#c2d1e1"/>
+      <rect x="208" y="320" width="96" height="96" fill="#c2d1e1"/>
+      <rect x="320" y="320" width="96" height="96" fill="#c2d1e1"/></g>
+</svg>
