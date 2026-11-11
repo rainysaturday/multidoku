@@ -201,7 +201,8 @@ the binary with `CHROME=/path/to/chromium`): sign-in, lobby, sitting down, soft 
 drawn padlocks, typed digits appearing on the other board, author badges, shared notes and
 chat, duplicate-clash highlighting on both boards, a cell filled with all nine candidates
 crossed out — exactly the ones a placed digit has spent, no more, and still legible, at both
-ends of the board's size range — a spent hint, a full solve
+ends of the board's size range, with the padlock standing down rather than covering a
+candidate and the author badge keeping clear of the digit it credits — a spent hint, a full solve
 through the keyboard to the shared win card, then _Deal another puzzle_. Then a second pass plays a
 race: creating it from the lobby form, the race tag and clock on the card, the scoreboard
 panel, a wrong digit rejected only to its author (flash + toast, nothing on the other

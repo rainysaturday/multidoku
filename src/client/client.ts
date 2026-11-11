@@ -676,7 +676,12 @@ function renderBoard(): void {
       );
     }
     badge.textContent = editor && !isGiven && names.has(editor) ? initials(names.get(editor)!) : '';
-    lock.innerHTML = holder ? LOCK_SVG : '';
+    // The padlock lives in the cell's top-right corner, which the candidate grid also
+    // owns: 13px of badge over a mark barely 9px tall buries half of it, leaving a digit
+    // you have to deduce from its neighbours. So the lock stands down when the cell is
+    // full of marks, and the holder's own ring (`.taken`, in their colour) carries
+    // ownership on its own. Clear the marks or move on, and the padlock is back.
+    lock.innerHTML = holder && !t.notes[i] ? LOCK_SVG : '';
   }
 
   padBtns.forEach((b, idx) => b.classList.toggle('used', counts[idx + 1] >= 9));

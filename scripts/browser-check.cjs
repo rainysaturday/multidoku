@@ -437,10 +437,58 @@ async function main() {
     check(exact.struck.join() === exact.want.join() && exact.live.length + exact.struck.length === 9,
       `with all nine candidates up, exactly the digits already standing in the cell's units are struck out (struck ${exact.struck.join('')} of the ${exact.units.join('')} standing there, left alone: ${exact.live.join('')})`);
     await tabA.shotEl('12e-candidate-cell-zoom', `#board .cell:nth-child(${emptyCell + 1})`, 6);
+    /* A padlock sits in the cell's top-right corner, and the candidate grid covers that
+       corner: measured, 13px of lock lay across one of the nine marks and hid roughly the
+       top half of it, leaving a digit you could only name by eliminating the other eight.
+       So a lock stands down when the cell is crowded with marks and the holder's ring is
+       left to carry ownership. Hand the cell back and the lock returns. */
+    await tabA.js(`document.querySelectorAll('#board .cell')[${(emptyCell + 40) % 81}].click()`);
+    await tabB.waitForJs(`!document.querySelectorAll('#board .cell')[${emptyCell}].classList.contains('taken')`, 'A has let go of the cell');
+    await tabB.js(`document.querySelectorAll('#board .cell')[${emptyCell}].click()`);
+    await tabA.waitForJs(`document.querySelectorAll('#board .cell')[${emptyCell}].classList.contains('taken')`, 'the cell is held by B');
+    await tabA.shotEl('12f-locked-candidate-cell', `#board .cell:nth-child(${emptyCell + 1})`, 6);
+    const held = await tabA.js(`(() => {
+      const cell = document.querySelectorAll('#board .cell')[${emptyCell}];
+      const marks = [...cell.querySelectorAll('.notes > span')].filter((m) => m.textContent).map((m) => m.getBoundingClientRect());
+      // the invariant, measured across the whole board: no lock box may touch a mark box
+      const collisions = [...document.querySelectorAll('#board .cell .lock')]
+        .filter((l) => l.querySelector('svg')).flatMap((l) => [...l.parentElement.querySelectorAll('.notes > span')].flatMap((m) => {
+          const a = l.getBoundingClientRect(), b = m.getBoundingClientRect();
+          return [Math.max(0, Math.min(a.right, b.right) - Math.max(a.left, b.left))
+                * Math.max(0, Math.min(a.bottom, b.bottom) - Math.max(a.top, b.top))];
+        })).filter((area) => area > 0).length;
+      return {
+        marks: marks.length,
+        taken: cell.classList.contains('taken'),
+        ring: cell.style.getPropertyValue('--c').trim(),
+        shadow: getComputedStyle(cell).boxShadow !== 'none',
+        padlock: !!cell.querySelector('.lock svg'),
+        collisions,
+      };
+    })()`);
+    check(held.taken && held.ring !== '' && held.shadow,
+      `a crowded cell still says whose it is, by ring alone (held: ${held.taken}, in ${held.ring || 'no colour'}, ring painted: ${held.shadow})`);
+    check(!held.padlock, `and it withholds the padlock rather than dropping it on ${held.marks} candidate marks`);
+    check(held.collisions === 0, `no padlock anywhere on the board lies across a pencil mark (${held.collisions} collisions)`);
+    // Hand things back. B parks on a clue, which no pencil-mark test will ever want,
+    // so the locks left behind cannot refuse a click further down the suite.
+    const clue = await tabA.js(`+document.querySelector('#board .cell.given').dataset.cell`);
+    const spare = await tabA.js(`[...document.querySelectorAll('#board .cell')].findIndex(
+      (c) => +c.dataset.cell !== ${emptyCell} && !c.classList.contains('given')
+        && !c.querySelector('.d').textContent && !c.querySelector('.notes span'))`);
+    await tabB.js(`document.querySelectorAll('#board .cell')[${clue}].click()`);
+    await tabA.waitForJs(`!document.querySelectorAll('#board .cell')[${emptyCell}].classList.contains('taken')`, 'the crowded cell is handed back');
+    await tabA.js(`document.querySelectorAll('#board .cell')[${emptyCell}].click()`);
+    // and where there are no marks to bury, the padlock is still drawn as before
+    await tabB.js(`document.querySelectorAll('#board .cell')[${spare}].click()`);
+    await tabA.waitForJs(`!!document.querySelectorAll('#board .cell')[${spare}].querySelector('.lock svg')`, 'a held cell without marks still shows its padlock');
+    check(true, 'a cell with nothing pencilled in still gets its padlock');
+    await tabB.js(`document.querySelectorAll('#board .cell')[${clue}].click()`);
+    await tabA.waitForJs(`!document.querySelectorAll('#board .cell')[${spare}].classList.contains('taken')`, 'B has stepped off the spare cell');
     // A phone shrinks the board but not the ems the marks are drawn at, which is where
     // an overflowed grid would first show up.
     await tabA.cmd('Emulation.setDeviceMetricsOverride', { width: 320, height: 900, deviceScaleFactor: 1, mobile: true });
-judgeGrid(await tabA.js(gridProbe), 'on a phone-width board');
+    judgeGrid(await tabA.js(gridProbe), 'on a phone-width board');
     await tabA.shot('12c-candidate-grid-narrow');
     // The narrow shot above is 320px wide, so a 1px gutter in it is invisible to the eye.
     // Capture the crowded cell on its own, scaled up, so the spacing can be judged.
@@ -644,6 +692,25 @@ judgeGrid(await tabA.js(gridProbe), 'on a phone-width board');
     await tabA.waitForJs(`!document.getElementById('win').classList.contains('hidden')`, 'win overlay');
     check(true, `filling the last ${empties.length} cells opens the shared win screen`);
     const winText = await tabA.js(`document.getElementById('win-sub').textContent + ' || ' + document.getElementById('win-stats').innerText.replace(/\s+/g, ' ')`);
+
+    /* Does a player badge ever lie across the digit it is crediting?  It sits in
+       the bottom-left corner of the cell, the digit in the middle: they are meant
+       to share a cell without touching, which is worth asserting rather than
+       assuming, and at every width the board can be drawn at. */
+    const overlayProbe = `(() => {
+      const hit = (a, b) => Math.max(0, Math.min(a.right, b.right) - Math.max(a.left, b.left))
+                          * Math.max(0, Math.min(a.bottom, b.bottom) - Math.max(a.top, b.top));
+      const rows = [...document.querySelectorAll('#board .cell')]
+        .map((c) => { const b = c.querySelector('.who-badge'); const d = c.querySelector('.d'); return { b, d }; })
+        .filter((x) => x.b.textContent && x.d.querySelector('svg'));
+      const overDigit = rows.map((x) => hit(x.b.getBoundingClientRect(), x.d.getBoundingClientRect())).filter((a) => a > 0).length;
+      const worst = Math.max(0, ...rows.map((x) => hit(x.b.getBoundingClientRect(), x.d.getBoundingClientRect())));
+      return { badges: rows.length, overDigit, worstPx: +worst.toFixed(1),
+               size: rows.length ? [rows[0].b.getBoundingClientRect().width.toFixed(1), rows[0].b.getBoundingClientRect().height.toFixed(1)] : null };
+    })()`;
+    const overlays = await tabA.js(overlayProbe);
+    check(overlays.badges > 20 && overlays.overDigit === 0,
+      `an author badge never lies across the digit it credits (${overlays.badges} badges, worst overlap ${overlays.worstPx}px)`);
     check(/hints used \d\/3/.test(winText), `win card reports time, hints and accuracy: ${winText}`);
     await tabA.shot('07-win');
     await tabB.waitForJs(`!document.getElementById('win').classList.contains('hidden')`, 'win overlay at B');
@@ -804,6 +871,9 @@ judgeGrid(await tabA.js(gridProbe), 'on a phone-width board');
     await tabA.js(`document.getElementById('score-panel').scrollIntoView({ block: 'center' })`);
     await sleep(400);
     await tabA.shot('10-race-narrow');
+    const overlaysSmall = await tabA.js(overlayProbe);
+    check(overlaysSmall.badges > 0 && overlaysSmall.overDigit === 0,
+      `the badges stay off the digits on the narrow board too (${overlaysSmall.badges} badges, worst overlap ${overlaysSmall.worstPx}px)`);
     const narrowBits = await tabA.js(`(() => {
       const p = document.getElementById('score-panel').getBoundingClientRect();
       const t = document.getElementById('timer');
