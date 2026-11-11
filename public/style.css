@@ -188,6 +188,16 @@ button.big { padding: .65rem 1rem; width: 100%; margin-top: .8rem; }
   place-items: center; font-size: clamp(9px, 1.9vw, 12px); color: var(--fg-dim); line-height: 1.1;
   pointer-events: none;
 }
+/* A mark whose digit already stands elsewhere in its row, column or box. It stays on the
+   board — erase the digit and the candidate is standing there again — so it is greyed and
+   struck through rather than deleted. The strike is deliberately diagonal: every segment of
+   a drawn digit is horizontal or vertical, so a straight strike could read as part of it. */
+.cell .notes span { position: relative; }
+.cell .notes .blocked { opacity: .34; }
+.cell .notes .blocked::after {
+  content: ""; position: absolute; left: -6%; right: -6%; top: 50%; height: 1px;
+  background: currentColor; transform: translateY(-.5px) rotate(-32deg);
+}
 .cell.done .who-badge { opacity: .55; }
 
 .pad { display: flex; gap: .6rem; flex-wrap: wrap; align-items: center; max-width: 540px; }

@@ -137,6 +137,11 @@ keeps it a puzzle instead of a guess-and-check toy. (A race is the exception: th
 server validates each digit so it can score it, and only the author is told when one is
 rejected.)
 
+**Pencil notes** are shared with the table and stay yours even when they stop being useful:
+once the digit a mark stands for is written elsewhere in its row, column or box, the mark is
+greyed and **struck out** instead of deleted. It is still a note you wrote — and it becomes a
+live candidate again the moment the digit that spent it is erased.
+
 ## Competitive races (optional)
 
 A table that opts into **race** mode keeps the same shared grid — everyone is still filling
@@ -174,7 +179,7 @@ hints and points never follow you between tables.
 ```bash
 npm test              # 111 checks: protocol, lobby/seats/locks/hints/chat/solve/reconnect/race,
                       #              and the installable files (manifest, worker, icons)
-npm run test:browser  # 104 checks: real client driven in headless Chromium, writes screenshots/
+npm run test:browser  # 114 checks: real client driven in headless Chromium, writes screenshots/
 npm run verify        # both
 ```
 

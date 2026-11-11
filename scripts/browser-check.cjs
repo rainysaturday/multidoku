@@ -341,6 +341,103 @@ async function main() {
     await tabB.waitForJs(`[...document.querySelectorAll('#board .cell .notes span')].filter(s => s.textContent).length === 0`, 'notes erased');
     check(true, 'erase clears the notes');
 
+    /* a placed digit makes the same digit's pencil marks impossible elsewhere in its
+       row, column or box. They are struck out, not deleted — erase the digit and every
+       candidate that was struck comes back. */
+    /* Pick a free cell and an empty one sharing a row (else column), plus a digit missing
+       from both cells' units — otherwise the mark is legitimately struck out the moment it
+       is drawn. Verdicts never rely on this snapshot of the board: each one re-reads the
+       digits in the cell's units from the same render pass as its marks (see probe). */
+    const pair = await tabA.js(`(() => {
+      const all = [...document.querySelectorAll('#board .cell')];
+      const shownAt = (i) => { const v = all[i].querySelector('.d .digit-value'); return v ? +v.textContent : 0; };
+      const free = (i) => !shownAt(i) && !all[i].classList.contains('given') && !all[i].classList.contains('taken') &&
+        ![...all[i].querySelectorAll('.notes > span')].some((s) => s.textContent);
+      const around = (i) => {
+        const r = Math.floor(i / 9), c = i % 9, out = [];
+        for (let k = 0; k < 9; k++) out.push(shownAt(r * 9 + k), shownAt(k * 9 + c));
+        const br = Math.floor(r / 3) * 3, bc = Math.floor(c / 3) * 3;
+        for (let x = 0; x < 3; x++) for (let y = 0; y < 3; y++) out.push(shownAt((br + x) * 3 + bc + y));
+        return out.filter(Boolean);
+      };
+      const open = [...Array(81).keys()].filter(free);
+      for (const i of open) for (const q of open) {
+        if (q === i) continue;
+        if (Math.floor(q / 9) !== Math.floor(i / 9) && q % 9 !== i % 9) continue;   // prefer a shared row
+        const used = new Set([...around(i), ...around(q)]);
+        const spare = [1, 2, 3, 4, 5, 6, 7, 8, 9].find((x) => !used.has(x));
+        if (spare) return { note: i, peer: q, digit: spare };
+      }
+      return null;
+    })()`);
+    check(!!pair, pair ? `found two free cells in a row, with ${pair.digit} quiet in both their units (${pair.note} / ${pair.peer})` : 'no usable cell pair for the struck-out mark test');
+    if (!pair) throw new Error('no usable cell pair');
+
+    const clashCount = () => tabA.js(`document.querySelectorAll('#board .cell.conflict').length`);
+    const clashesBefore = await clashCount();
+    const cellAt = (i) => `document.querySelectorAll('#board .cell')[${i}]`;
+    const markCells = cellAt(pair.note);
+    const peerCells = cellAt(pair.peer);
+    /* Pencil marks in a cell, the ones struck out, and the digits standing in that cell's
+       row/column/box — all read out of ONE render pass. renderBoard swaps the whole board
+       in one go, so these can never disagree with each other no matter what the other
+       player does in between, and "struck" must equal "expect" for the render to be right. */
+    const probe = (i) => tabA.js(`(() => {
+      const all = [...document.querySelectorAll('#board .cell')];
+      const r = Math.floor(${i} / 9), c = ${i} % 9, br = Math.floor(r / 3) * 3, bc = Math.floor(c / 3) * 3;
+      const shownAt = (j) => { const v = all[j].querySelector('.d .digit-value'); return v ? +v.textContent : 0; };
+      const used = new Set();
+      for (let k = 0; k < 9; k++) { const a = shownAt(r * 9 + k), b = shownAt(k * 9 + c); if (a) used.add(a); if (b) used.add(b); }
+      for (let x = 0; x < 3; x++) for (let y = 0; y < 3; y++) { const v = shownAt((br + x) * 3 + bc + y); if (v) used.add(v); }
+      const marks = [...all[${i}].querySelectorAll('.notes > span')].filter((s) => s.textContent);
+      const key = (list) => list.map((s) => s.textContent).sort().join('');
+      return {
+        marks: key(marks),
+        struck: key(marks.filter((s) => s.classList.contains('blocked'))),
+        expect: key(marks.filter((s) => used.has(+s.textContent))),
+      };
+    })()`);
+
+    await tabA.js(`${markCells}.click(); document.getElementById('btn-notes').click();`);
+    await tabA.key(String(pair.digit));
+    await tabA.waitForJs(`[...${markCells}.querySelectorAll('.notes > span')].some(s => s.textContent === '${pair.digit}')`, 'the pencil mark is drawn');
+    const fresh = await probe(pair.note);
+    check(fresh.marks === String(pair.digit) && fresh.struck === fresh.expect,
+      `a lone mark is struck out exactly when its digit stands in its units (marks ${fresh.marks}, struck "${fresh.struck}", expected struck "${fresh.expect}")`);
+    const startedQuiet = fresh.struck === '';
+
+    await tabA.js(`document.getElementById('btn-notes').click(); ${peerCells}.click();`);
+    await tabA.key(String(pair.digit));
+    await tabA.waitForJs(`${peerCells}.querySelector('.d .digit-value') && ${peerCells}.querySelector('.d .digit-value').textContent === '${pair.digit}'`, 'the digit is placed down the row');
+
+    const struck = await probe(pair.note);
+    check(struck.struck === String(pair.digit) && struck.struck === struck.expect,
+      `the clash strikes that candidate out (struck "${struck.struck}", expected "${struck.expect}")`);
+    check(struck.marks === String(pair.digit), 'but the mark is still drawn — disabled, not deleted');
+    check(await tabA.js(`${markCells}.querySelectorAll('.notes span.blocked svg.glyph path').length`) === 1, 'the struck mark is still drawn');
+    check(await tabA.js(`[...${markCells}.querySelectorAll('.notes span.blocked svg.glyph path')].every((p) => !/[cCsSqQtTaAlLdD]/.test(p.getAttribute('d')))`), 'and still built from square bars');
+    const clashesAfter = await clashCount();
+    check(clashesAfter === clashesBefore, `placing that digit clashed nothing of its own (${clashesAfter} clashing cells, same as before)`);
+    check(await tabB.js(`${markCells}.querySelectorAll('.notes span.blocked').length`) === 1, 'the other tab strikes out the same mark');
+    await tabA.shotEl('14-mark-struck-out', '#board');
+    await tabA.shotEl('14b-mark-struck-close', `#board .cell:nth-child(${pair.note + 1})`);
+
+    await tabA.js(`${peerCells}.click(); document.getElementById('btn-erase').click();`);
+    await tabA.waitForJs(`${peerCells}.querySelector('.d .digit-value') === null`, 'the digit is erased');
+    const back = await probe(pair.note);
+    if (startedQuiet && back.struck === '') {
+      check(back.marks === String(pair.digit), `erasing the digit hands the candidate back (marks ${back.marks})`);
+      check(await tabB.js(`${markCells}.querySelectorAll('.notes span.blocked').length`) === 0, 'and the other tab gets it back too');
+    } else {
+      check(back.struck === back.expect && back.marks === String(pair.digit),
+        `a ${pair.digit} landed in its units from elsewhere, so it stays struck out (struck "${back.struck}", expected "${back.expect}")`);
+      check(await tabB.js(`${markCells}.querySelectorAll('.notes span.blocked').length`) === back.struck.length, 'and both tabs agree on that');
+    }
+    await tabA.shotEl('14c-mark-restored-close', `#board .cell:nth-child(${pair.note + 1})`);
+
+    await tabA.js(`${markCells}.click(); document.getElementById('btn-erase').click();`);
+    await tabA.waitForJs(`[...document.querySelectorAll('#board .cell .notes > span')].filter(s => s.textContent).length === 0`, 'the struck mark is tidied away');
+
     /* sidebar / stats sanity */
     const snap = await tabA.js(`({
       prog: document.getElementById('prog').textContent,

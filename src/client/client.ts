@@ -606,6 +606,22 @@ function renderBoard(): void {
   const selDigit = app.myCell !== null ? t.digits[app.myCell] : 0;
 
   const counts = new Array<number>(10).fill(0);
+
+  /* Which digits already stand in each row, column and box. A pencil mark is no longer
+     a candidate once its digit appears elsewhere in its unit, and this is the only place
+     that decides it: the mark itself is never edited, so erasing the digit that spent it
+     leaves the candidate standing again by itself. */
+  const usedInRow = new Array(9).fill(0);
+  const usedInCol = new Array(9).fill(0);
+  const usedInBox = new Array(9).fill(0);
+  for (let i = 0; i < 81; i++) {
+    const placed = t.givens[i] || t.digits[i];
+    if (!placed) continue;
+    const bit = 1 << (placed - 1);
+    usedInRow[Math.floor(i / 9)] |= bit;
+    usedInCol[i % 9] |= bit;
+    usedInBox[Math.floor(i / 27) * 3 + Math.floor((i % 9) / 3)] |= bit;
+  }
   for (let i = 0; i < 81; i++) if (t.digits[i]) counts[t.digits[i]]++;
 
   for (let i = 0; i < 81; i++) {
@@ -642,13 +658,21 @@ function renderBoard(): void {
     notesEl.textContent = '';
     if (!digit && t.notes[i]) {
       const mask = t.notes[i];
+      const usedHere =
+        usedInRow[row] | usedInCol[col] | usedInBox[Math.floor(row / 3) * 3 + Math.floor(col / 3)];
       const cells: string[] = [];
       for (let dgt = 1; dgt <= 9; dgt++) cells.push(mask & (1 << (dgt - 1)) ? String(dgt) : '');
-      notesEl.replaceChildren(...cells.map((c) => {
-        const s = document.createElement('span');
-        if (c) paintDigit(s, c);
-        return s;
-      }));
+      notesEl.replaceChildren(
+        ...cells.map((c, idx) => {
+          const s = document.createElement('span');
+          if (c) {
+            paintDigit(s, c);
+            // still a mark you made, just no longer possible: greyed and struck, never deleted
+            if (usedHere & (1 << idx)) s.classList.add('blocked');
+          }
+          return s;
+        }),
+      );
     }
     badge.textContent = editor && !isGiven && names.has(editor) ? initials(names.get(editor)!) : '';
     lock.innerHTML = holder ? LOCK_SVG : '';
