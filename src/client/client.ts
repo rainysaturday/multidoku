@@ -615,7 +615,8 @@ function renderBoard(): void {
   const usedInCol = new Array(9).fill(0);
   const usedInBox = new Array(9).fill(0);
   for (let i = 0; i < 81; i++) {
-    const placed = t.givens[i] || t.digits[i];
+    // clues are already in `digits`; `givens` is a parallel 0/1 flag, not a digit
+    const placed = t.digits[i];
     if (!placed) continue;
     const bit = 1 << (placed - 1);
     usedInRow[Math.floor(i / 9)] |= bit;

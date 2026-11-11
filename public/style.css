@@ -7,6 +7,7 @@
   --line-strong: #3b4c61;
   --fg: #e9eff7;
   --fg-dim: #93a3b8;
+  --fg-spent: #c2cddb; /* brighter than a live pencil mark, dimmer than a real digit */
   --accent: #f58742;
   --accent-ink: #1b1206;
   --ok: #30a46c;
@@ -185,18 +186,44 @@ button.big { padding: .65rem 1rem; width: 100%; margin-top: .8rem; }
 }
 .cell .notes {
   position: absolute; inset: 3px; display: grid; grid-template-columns: repeat(3, 1fr);
+  grid-template-rows: repeat(3, 1fr);
   place-items: center; font-size: clamp(9px, 1.9vw, 12px); color: var(--fg-dim); line-height: 1.1;
   pointer-events: none;
 }
-/* A mark whose digit already stands elsewhere in its row, column or box. It stays on the
-   board — erase the digit and the candidate is standing there again — so it is greyed and
-   struck through rather than deleted. The strike is deliberately diagonal: every segment of
-   a drawn digit is horizontal or vertical, so a straight strike could read as part of it. */
-.cell .notes span { position: relative; }
-.cell .notes .blocked { opacity: .34; }
-.cell .notes .blocked::after {
-  content: ""; position: absolute; left: -6%; right: -6%; top: 50%; height: 1px;
-  background: currentColor; transform: translateY(-.5px) rotate(-32deg);
+/* Every mark is a box drawn tightly around its glyph — and it is also the positioned
+   ancestor the cancellation stroke below hangs from. Without `display: grid` the slot
+   is a text line box, taller than the glyph with the glyph pushed to its top, which
+   crowds the marks against the top edge of the cell. Without `position: relative` the
+   stroke resolves its 50%/50% against the whole note grid and lands in the middle of
+   the cell, nowhere near the digit it was meant to cancel. */
+.cell .notes span { position: relative; display: grid; place-items: center; }
+/* A mark whose digit already stands elsewhere in its row, column or box. It stays on
+   the board — erase the digit and the candidate is standing there again — so it is
+   crossed out rather than deleted. One stroke, not a cross: a pencil mark is around
+   twelve pixels tall, and a second stroke doubling back over it buries the very bars
+   that tell a 6 from an 8. Measured on a cell full of nine: an X left none of the
+   cancelled figures readable, a single slash left every one but a lone 1. The stroke
+   is shallow rather than a tidy 45 degrees for the same reason — it only has to cut
+   the middle bar, where a steeper one would run across all three horizontals — and it
+   stays diagonal, because every segment of a drawn digit is horizontal or vertical, so
+   a straight strike could pass for part of the figure. The colour is the spent tone:
+   brighter than a live mark's ink, so the cancellation is unmistakable at board scale,
+   and dimmer than a real digit's, so a candidate that cannot be played never outshouts
+   one that can. The figure itself is barely dimmed, because a cancellation that hides
+   which candidate it cancelled has thrown away the thing it exists to record. */
+.cell .notes .blocked { color: var(--fg-spent); }
+.cell .notes .blocked svg { opacity: .8; }
+.cell .notes .blocked::before {
+  content: "";
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 1.16em;
+  height: 1.15px;
+  margin: -.575px 0 0 -.58em;
+  background: currentColor;
+  border-radius: 1px;
+  transform: rotate(-30deg);
 }
 .cell.done .who-badge { opacity: .55; }
 
