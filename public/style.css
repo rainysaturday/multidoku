@@ -154,7 +154,7 @@ button.big { padding: .65rem 1rem; width: 100%; margin-top: .8rem; }
 .cell .d { position: relative; font-size: clamp(15px, 3.4vw, 25px); line-height: 1; }
 .cell .glyph { display: block; fill: currentColor; shape-rendering: crispEdges; }
 .cell .d .glyph { width: .78em; height: 1.1em; }
-.cell .notes .glyph { width: .72em; height: 1.05em; }
+.cell .notes .glyph { width: 100%; height: auto; }
 .cell .digit-value {
   position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0;
   overflow: hidden; clip-path: inset(50%); white-space: nowrap;
@@ -191,12 +191,19 @@ button.big { padding: .65rem 1rem; width: 100%; margin-top: .8rem; }
   pointer-events: none;
 }
 /* Every mark is a box drawn tightly around its glyph — and it is also the positioned
-   ancestor the cancellation stroke below hangs from. Without `display: grid` the slot
-   is a text line box, taller than the glyph with the glyph pushed to its top, which
-   crowds the marks against the top edge of the cell. Without `position: relative` the
-   stroke resolves its 50%/50% against the whole note grid and lands in the middle of
-   the cell, nowhere near the digit it was meant to cancel. */
-.cell .notes span { position: relative; display: grid; place-items: center; }
+   ancestor the cancellation stroke below hangs from, which is why the stroke is sized in
+   percentages of it. Without `display: grid` the slot is a text line box, taller than the
+   glyph with the glyph pushed to its top, which crowds the marks against the top edge of
+   the cell. Without `position: relative` the stroke resolves its 50%/50% against the whole
+   note grid and lands in the middle of the cell, nowhere near the digit it cancels.
+   The width is capped at a share of the slot, and the glyph then fills that box, because
+   marks used to be sized in ems alone while the cell is sized by the board: on a small
+   phone the board shrinks out from under them and the nine candidates filled their slots
+   edge to edge, reading as one clump rather than nine digits. The cap has to sit here
+   rather than on the glyph, and on the inline axis rather than the block one, because a
+   percentage resolves against this box's grid area — while the box itself is only as tall
+   as the mark inside it, so a percentage height there has nothing to resolve against. */
+.cell .notes span { position: relative; display: grid; place-items: center; width: min(.72em, 60%); }
 /* A mark whose digit already stands elsewhere in its row, column or box. It stays on
    the board — erase the digit and the candidate is standing there again — so it is
    crossed out rather than deleted. One stroke, not a cross: a pencil mark is around
@@ -211,6 +218,13 @@ button.big { padding: .65rem 1rem; width: 100%; margin-top: .8rem; }
    and dimmer than a real digit's, so a candidate that cannot be played never outshouts
    one that can. The figure itself is barely dimmed, because a cancellation that hides
    which candidate it cancelled has thrown away the thing it exists to record. */
+/* The cancellation sits on the mark it cancels: centred on it, and drawn in the same em
+   the marks are sized in, so it keeps its proportion to the digit when the marks have to
+   shrink. A mark's box is the digit, so 161% of it is what once measured 13.9px on a
+   full-size board: 12px laid across a mark 8.6px wide, clear past both sides so it cannot
+   be mistaken for a stroke of the digit itself, and only 7px down, comfortably inside the
+   17.7px slot. It stays short of the mark's own diagonal on purpose — that is what keeps a
+   struck candidate from appearing to strike its neighbour as well. */
 .cell .notes .blocked { color: var(--fg-spent); }
 .cell .notes .blocked svg { opacity: .8; }
 .cell .notes .blocked::before {
@@ -218,9 +232,9 @@ button.big { padding: .65rem 1rem; width: 100%; margin-top: .8rem; }
   position: absolute;
   top: 50%;
   left: 50%;
-  width: 1.16em;
+  width: 161%;
   height: 1.15px;
-  margin: -.575px 0 0 -.58em;
+  margin: -.575px 0 0 -80.5%;
   background: currentColor;
   border-radius: 1px;
   transform: rotate(-30deg);

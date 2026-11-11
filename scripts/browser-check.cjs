@@ -90,13 +90,13 @@ class Tab {
     console.log(`  shot ${file}`);
   }
 
-  async shotEl(name, selector) {
+  async shotEl(name, selector, scale = 2) {
     const box = await this.js(
       `(function () { const b = document.querySelector(${JSON.stringify(selector)}).getBoundingClientRect(); return { x: b.x, y: b.y, width: b.width, height: b.height }; })()`,
     );
     const res = await this.cmd('Page.captureScreenshot', {
       format: 'png',
-      clip: { x: Math.round(box.x), y: Math.round(box.y), width: Math.round(box.width), height: Math.round(box.height), scale: 2 },
+      clip: { x: Math.round(box.x), y: Math.round(box.y), width: Math.round(box.width), height: Math.round(box.height), scale },
     });
     if (!res.result?.data) {
       console.log(`  note screenshot clip failed: ${JSON.stringify(res.error)}`);
@@ -347,16 +347,30 @@ async function main() {
     const nine = (i) => `document.querySelectorAll('#board .cell')[${i}].querySelectorAll('.notes svg.glyph').length === 9`;
     await tabA.waitForJs(nine(emptyCell), 'all nine candidates back at A');
     await tabB.waitForJs(nine(emptyCell), 'all nine candidates at B');
-    const grid = await tabA.js(`(() => {
+    // What a cell full of candidates should look like: an even 3x3 spread over the cell,
+    // every mark inside its slot. The marks are sized in ems and the cell is sized by the
+    // board, so those two come apart as the window shrinks, and until recently each mark's
+    // box was a text line box rather than a box around its glyph, which packed the whole
+    // set against the top edge of the cell. Probed at both ends of the board's range.
+    const gridProbe = `(() => {
       const cellEl = document.querySelectorAll('#board .cell')[${emptyCell}];
       const box = cellEl.getBoundingClientRect();
+      const notes = cellEl.querySelector('.notes').getBoundingClientRect();
       const slots = [...cellEl.querySelectorAll('.notes svg.glyph')].map((s) => {
         const r = s.getBoundingClientRect();
         return { x: r.x + r.width / 2, y: r.y + r.height / 2, l: r.left, r: r.right, t: r.top, b: r.bottom };
       });
+      const marks = [...cellEl.querySelectorAll('.notes > span')].map((s) => {
+        const r = s.getBoundingClientRect();
+        return { w: r.width, h: r.height, l: r.left, r: r.right, t: r.top, b: r.bottom };
+      });
       const clusters = (vals) => new Set(vals.map((n) => Math.round(n / 4))).size;
       const spread = (vals) => { const s = [...vals].sort((p, q) => p - q); return s[s.length - 1] - s[0]; };
       const xs = slots.map((p) => p.x), ys = slots.map((p) => p.y);
+      const overlap = (a, b) => Math.max(0, Math.min(a.r, b.r) - Math.max(a.l, b.l))
+                             * Math.max(0, Math.min(a.b, b.b) - Math.max(a.t, b.t));
+      let worst = 0;
+      for (let i = 0; i < marks.length; i++) for (let j = i + 1; j < marks.length; j++) worst = Math.max(worst, overlap(marks[i], marks[j]));
       return {
         count: slots.length, columns: clusters(xs), rows: clusters(ys),
         colGap: +(spread(xs) / 2).toFixed(1), rowGap: +(spread(ys) / 2).toFixed(1),
@@ -364,14 +378,74 @@ async function main() {
                 +(box.right - Math.max(...slots.map((p) => p.r))).toFixed(1),
                 +(Math.min(...slots.map((p) => p.t)) - box.top).toFixed(1),
                 +(box.bottom - Math.max(...slots.map((p) => p.b))).toFixed(1)],
+        slot: +(notes.width / 3).toFixed(2),
+        overSlot: +Math.max(0, ...marks.map((m) => m.h - notes.height / 3)).toFixed(1),
+        collide: +worst.toFixed(1),
+        // edge to edge between neighbours: a grid can be geometrically "not overlapping"
+        // and still read as one clump, which is what a screenshot caught and centres did not
+        // edge to edge between neighbours: a grid can be geometrically "not overlapping"
+        // and still read as one clump, which is what a screenshot caught and centres did not
+        air: +Math.min(...marks.flatMap((a) => marks.flatMap((b) => {
+          if (a === b) return [];
+          const cy = (a.t + a.b) / 2, by = (b.t + b.b) / 2;
+          const cx = (a.l + a.r) / 2, bx = (b.l + b.r) / 2;
+          if (Math.abs(cy - by) < 4) return [Math.abs(cx - bx) - ((a.r - a.l) + (b.r - b.l)) / 2];
+          if (Math.abs(cx - bx) < 4) return [Math.abs(cy - by) - ((a.b - a.t) + (b.b - b.t)) / 2];
+          return [];
+        }))).toFixed(1),
       };
+    })()`;
+    const judgeGrid = (g, where) => {
+      check(g.count === 9 && g.columns === 3 && g.rows === 3,
+        `${where}: a full set of candidates sits as three rows of three (${g.rows} rows by ${g.columns} columns)`);
+      check(Math.abs(g.colGap - g.rowGap) <= Math.max(2, g.colGap * .1),
+        `${where}: the candidate grid is as even across as it is down (${g.colGap}px across, ${g.rowGap}px down)`);
+      check(Math.min(...g.inset) >= 0,
+        `${where}: every mark stays inside the cell (${g.inset.join('/')}px of room to its edges)`);
+      check(g.overSlot <= 0.1 && g.collide <= 0.5,
+        `${where}: each mark fits the slot it is handed, so nothing runs into its neighbours (${g.overSlot}px over, ${g.collide}px of overlap)`);
+      check(g.air >= Math.max(1, g.slot * .12),
+        `${where}: neighbours stand clear of each other rather than reading as one clump (${g.air}px of air in a ${g.slot}px cell)`);
+    };
+    judgeGrid(await tabA.js(gridProbe), 'on a full-size board');
+
+    // With all nine candidates up, the set of crossed-out marks should be exactly the
+    // digits already standing somewhere in this cell's row, column or box — no more (that
+    // was the `givens` bug, which read every clue as a 1) and no less.
+    const exact = await tabA.js(`(() => {
+      const cells = [...document.querySelectorAll('#board .cell')];
+      const value = (c) => { const v = c.querySelector('.d .digit-value'); return v ? +v.textContent : 0; };
+      const self = cells[${emptyCell}];
+      const row = Math.floor(${emptyCell} / 9), col = ${emptyCell} % 9;
+      const seen = new Set();
+      for (let k = 0; k < 9; k++) {
+        const a = value(cells[row * 9 + k]), b = value(cells[k * 9 + col]);
+        if (a) seen.add(a);
+        if (b) seen.add(b);
+      }
+      const br = Math.floor(row / 3) * 3, bc = Math.floor(col / 3) * 3;
+      for (let x = 0; x < 3; x++) for (let y = 0; y < 3; y++) {
+        const i = (br + x) * 9 + (bc + y);
+        if (i !== ${emptyCell}) { const v = value(cells[i]); if (v) seen.add(v); }
+      }
+      const marks = [...self.querySelectorAll('.notes > span')];
+      const struck = marks.filter((m) => m.classList.contains('blocked')).map((m) => +m.textContent).sort();
+      const live = marks.filter((m) => !m.classList.contains('blocked')).map((m) => +m.textContent).sort();
+      const want = [...seen].sort((p, q) => p - q);
+      return { struck, live, want, units: [...seen].sort() };
     })()`);
-    check(grid.count === 9 && grid.columns === 3 && grid.rows === 3,
-      `a full set of candidates sits as three rows of three (${grid.rows} rows by ${grid.columns} columns)`);
-    check(Math.abs(grid.colGap - grid.rowGap) <= 2,
-      `and the candidate grid is as even across as it is down (${grid.colGap}px across, ${grid.rowGap}px down)`);
-    check(Math.min(...grid.inset) >= 0,
-      `with every mark inside the cell (${grid.inset.join('/')}px of room to its edges)`);
+    check(exact.struck.join() === exact.want.join() && exact.live.length + exact.struck.length === 9,
+      `with all nine candidates up, exactly the digits already standing in the cell's units are struck out (struck ${exact.struck.join('')} of the ${exact.units.join('')} standing there, left alone: ${exact.live.join('')})`);
+    await tabA.shotEl('12e-candidate-cell-zoom', `#board .cell:nth-child(${emptyCell + 1})`, 6);
+    // A phone shrinks the board but not the ems the marks are drawn at, which is where
+    // an overflowed grid would first show up.
+    await tabA.cmd('Emulation.setDeviceMetricsOverride', { width: 320, height: 900, deviceScaleFactor: 1, mobile: true });
+judgeGrid(await tabA.js(gridProbe), 'on a phone-width board');
+    await tabA.shot('12c-candidate-grid-narrow');
+    // The narrow shot above is 320px wide, so a 1px gutter in it is invisible to the eye.
+    // Capture the crowded cell on its own, scaled up, so the spacing can be judged.
+    await tabA.shotEl('12d-candidate-cell-narrow-zoom', `#board .cell:nth-child(${emptyCell + 1})`, 8);
+    await tabA.cmd('Emulation.setDeviceMetricsOverride', { width: 1200, height: 900, deviceScaleFactor: 1, mobile: false });
     const crowded = await tabA.js(`(() => {
       const cellEl = document.querySelectorAll('#board .cell')[${emptyCell}];
       const box = cellEl.getBoundingClientRect();

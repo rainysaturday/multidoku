@@ -183,7 +183,7 @@ hints and points never follow you between tables.
 ```bash
 npm test              # 111 checks: protocol, lobby/seats/locks/hints/chat/solve/reconnect/race,
                       #              and the installable files (manifest, worker, icons)
-npm run test:browser  # 127 checks: real client driven in headless Chromium, writes screenshots/
+npm run test:browser  # 135 checks: real client driven in headless Chromium, writes screenshots/
 npm run verify        # both
 ```
 
@@ -199,8 +199,9 @@ stats that reset between tables, and a short round clock ending a race nobody fi
 `scripts/browser-check.cjs` drives the actual UI in two tabs of headless Chromium (override
 the binary with `CHROME=/path/to/chromium`): sign-in, lobby, sitting down, soft locks with
 drawn padlocks, typed digits appearing on the other board, author badges, shared notes and
-chat, duplicate-clash highlighting on both boards, a cell filled with all nine candidates and
-the cancellation struck over the ones a placed digit has spent, a spent hint, a full solve
+chat, duplicate-clash highlighting on both boards, a cell filled with all nine candidates
+crossed out — exactly the ones a placed digit has spent, no more, and still legible, at both
+ends of the board's size range — a spent hint, a full solve
 through the keyboard to the shared win card, then _Deal another puzzle_. Then a second pass plays a
 race: creating it from the lobby form, the race tag and clock on the card, the scoreboard
 panel, a wrong digit rejected only to its author (flash + toast, nothing on the other
