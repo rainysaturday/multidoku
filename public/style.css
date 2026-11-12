@@ -106,6 +106,8 @@ button.big { padding: .65rem 1rem; width: 100%; margin-top: .8rem; }
 .tag.playing { color: var(--accent); border-color: #6a4526; }
 .tag.won { color: var(--ok); border-color: #2c5b45; }
 .tag.you { color: var(--fg); border-color: var(--line-strong); }
+.tag.host { color: var(--accent); border-color: #6a4526; }
+.tag.kicked { color: #f2a1a4; border-color: #6b3539; }
 .tag.coop { color: #7fd6a5; border-color: #2c5b45; }
 .tag.versus { color: #f2a1a4; border-color: #6b3539; }
 .seatrow { display: flex; gap: .35rem; flex-wrap: wrap; margin-bottom: .7rem; }
@@ -257,9 +259,31 @@ button.big { padding: .65rem 1rem; width: 100%; margin-top: .8rem; }
 .pline { display: flex; align-items: center; gap: .5rem; font-size: .85rem; }
 .pline .dot { width: 10px; height: 10px; border-radius: 50%; flex: 0 0 auto; }
 .pline .nm { font-weight: 600; }
-.pline .sub { color: var(--fg-dim); font-size: .75rem; margin-left: auto; font-variant-numeric: tabular-nums; }
+.pline .sub { color: var(--fg-dim); font-size: .75rem; margin-left: auto; font-variant-numeric: tabular-nums; white-space: nowrap; }
+/* the count and the Remove column do not move, so the name is what gives */
+.pline .nm { min-width: 0; overflow-wrap: anywhere; }
 .pline.off { opacity: .5; }
 .pline .seatno { color: var(--fg-dim); font-size: .72rem; width: 14px; }
+.pline .kickspace { flex: 0 0 auto; width: var(--kick-w); margin-left: .3rem; }
+/* Kicking is the host's one power: quiet until you go looking for it,
+ * unmistakable once it has been pressed and is waiting to be confirmed.
+ * One width for the whole Remove column, shared with the empty slot on rows
+ * that have no button, so the placed counts stay in a line -- and the row does
+ * not jump sideways when the button changes its mind to "Sure?". */
+.pline { --kick-w: 4.4rem; }
+.pline .kick {
+  flex: 0 0 var(--kick-w); width: var(--kick-w); margin-left: .3rem; padding: .1rem .5rem;
+  font-size: .7rem; line-height: 1.45; border-radius: 999px;
+  color: var(--fg-dim); background: transparent;
+}
+.pline .kick:hover:not(:disabled) { color: var(--fg); background: #202c3b; border-color: var(--line-strong); }
+.pline .kick.armed {
+  color: #fff; background: var(--bad); border-color: var(--bad); font-weight: 650;
+  /* three beats, then it stays red: the question expires on its own, and a
+     forever-pulsing button is not kind to anyone */
+  animation: kick-armed .8s ease-in-out 3;
+}
+@keyframes kick-armed { 50% { background: #8f2226; border-color: #8f2226; } }
 .panel-actions { display: flex; flex-wrap: wrap; gap: .4rem; }
 
 /* scoreboard: only shown in competitive mode */

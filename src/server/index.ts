@@ -121,6 +121,12 @@ class Hub {
         case 'chat':
           for (const p of table.players) this.sendChat(p.id, action.entry);
           break;
+        case 'eject':
+          /* the table has already let the seat go; this is the part only the
+             hub can do — tell the player they are out, and forget them. */
+          this.send(action.to, { type: 'left', reason: action.message });
+          this.seatedAt.delete(action.to);
+          break;
       }
     }
   }
@@ -211,6 +217,15 @@ class Hub {
         if (!table) break;
         this.send(playerId, { type: 'left', reason: 'You stood up.' });
         this.stand(playerId);
+        this.publishLobby();
+        break;
+      }
+      case 'kick': {
+        if (!table) break;
+        /* Table.kick checks who is allowed to do this and frees the seat; apply
+           delivers the event, the error, or the eject. */
+        this.apply(table, table.kick(player, String(msg.playerId ?? '')));
+        this.publishTable(table);
         this.publishLobby();
         break;
       }

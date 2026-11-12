@@ -128,6 +128,17 @@ sit down at the same table from their own phone or laptop.
    win card shows the time and each solver's placements / accuracy / hints. _Deal another
    puzzle_ restarts the same table.
 
+**Hosting.** Whoever sat down first runs the table: their seat carries a `host` tag, and
+only they are offered a `Remove` button beside anyone else's name. Removing someone takes
+two clicks — `Remove`, then `Sure?`, which expires after a few seconds — sends them back to
+the lobby with a line in their feed saying why, and stops them sitting at that table again.
+Their digits stay on the board, because the board belongs to everyone and wiping it would
+give an exit some extra teeth; they keep their author colours and show up as alumni on the
+win card. A removed player can still spectate and can always start a table of their own. If
+the host stands up, the longest-seated player takes over. There are no accounts here, so
+that lockout keeps out the person who was just there — it is not a ban against someone
+willing to open a private window.
+
 **Keyboard:** digits `1-9` place (or toggle a note in notes mode), `N` notes mode,
 `Backspace`/`Del`/`0` erase, arrow keys move the selection, `Esc` deselects.
 
@@ -181,9 +192,9 @@ hints and points never follow you between tables.
 ## Tests
 
 ```bash
-npm test              # 111 checks: protocol, lobby/seats/locks/hints/chat/solve/reconnect/race,
+npm test              # 136 checks: protocol, lobby/seats/locks/hints/chat/solve/reconnect/race,
                       #              and the installable files (manifest, worker, icons)
-npm run test:browser  # 135 checks: real client driven in headless Chromium, writes screenshots/
+npm run test:browser  # 159 checks: real client driven in headless Chromium, writes screenshots/
 npm run verify        # both
 ```
 
@@ -194,7 +205,10 @@ cooperative solve, restart, stand-up, reconnect by token, seat/empty-table recla
 a full eight-seat table taken to the win by eight players at once, and the competitive
 race: mode switching before the deal, per-digit scoring, the run bonus, rejected digits
 that never reach the board and stay private, refused erases, standings and `winnerIds`,
-stats that reset between tables, and a short round clock ending a race nobody finished.
+stats that reset between tables, and a short round clock ending a race nobody finished, and the host's power to remove a player
+(a guest's attempt refused, no self-kick, the victim told where they stand and barred from that
+table's seats while their digits stay behind credited to them, the host role passing to the next
+player in seat order).
 
 `scripts/browser-check.cjs` drives the actual UI in two tabs of headless Chromium (override
 the binary with `CHROME=/path/to/chromium`): sign-in, lobby, sitting down, soft locks with
@@ -208,7 +222,11 @@ race: creating it from the lobby form, the race tag and clock on the card, the s
 panel, a wrong digit rejected only to its author (flash + toast, nothing on the other
 board), a run of three paying its bonus, the leader line, a refused erase, the narrow-layout
 scoreboard, and the league table on the win card. It captures `screenshots/*.png`
-and fails if either tab throws a JS error. A final pass checks the app is installable from
+and fails if either tab throws a JS error. The seat list is checked too: that only the host is
+offered `Remove` and everyone can see who the host is, that the first click only asks `Sure?`
+and that the question survives the seat list being rebuilt underneath it, that the removed
+player lands in the lobby to find the table's seats closed to them and a `removed` tag on the
+card, and that the whole thing still fits a phone-width card. A final pass checks the app is installable from
 inside the page: the service worker is live, scoped to `/` and controlling the tab, the five
 shell files sit in a versioned cache, the `<link rel=manifest>` target arrives as
 `application/manifest+json` and parses with `display: standalone` and fetchable icons, and

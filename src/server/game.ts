@@ -86,7 +86,9 @@ export type TableAction =
   /** competitive mode: a digit that did not belong in that cell */
   | { kind: 'reject'; to: string; cell: number; points: number; message: string }
   | { kind: 'event'; ekind: EventKind; text: string }
-  | { kind: 'chat'; entry: ChatEntry };
+  | { kind: 'chat'; entry: ChatEntry }
+  /** Transport only: the hub tells this player they are out and forgets their seat. */
+  | { kind: 'eject'; to: string; message: string };
 
 export const newId = (bytes = 6): string => randomBytes(bytes).toString('base64url');
 
@@ -131,6 +133,11 @@ export class Table {
   private byId = new Map<string, Player>();
   /** id -> {name,color} for players who walked away mid-round. */
   private alumni = new Map<string, { id: string; name: string; color: string }>();
+  /**
+   * Players the host has removed. They keep the page and can watch the lobby,
+   * but they cannot sit at this table again while it exists.
+   */
+  private banned = new Set<string>();
 
   puzzle: Puzzle | null = null;
   givens: number[] = new Array(81).fill(0);
@@ -187,6 +194,9 @@ export class Table {
   }
 
   sit(player: Player, seat?: number): TableAction[] {
+    if (this.banned.has(player.id)) {
+      return [{ kind: 'error', to: player.id, message: `You were removed from "${this.name}" and cannot sit there again.` }];
+    }
     if (this.players.length >= this.maxPlayers) {
       return [{ kind: 'error', to: player.id, message: `Table "${this.name}" is full (${this.maxPlayers} seats).` }];
     }
@@ -223,6 +233,42 @@ export class Table {
     }
     if (this.ownerId === playerId) this.ownerId = this.players[0].id;
     return [{ kind: 'event', ekind: 'leave', text: `${player.name} left the table.` }];
+  }
+
+  /**
+   * The host shows somebody the door: their seat is freed and any cell they
+   * were holding is released, but their digits stay on the board — they become
+   * alumni, exactly as if they had stood up. Wiping what they placed would let
+   * a troublemaker do more damage on the way out than they did on the way in.
+   *
+   * Removal is not a ban from the site: there are no accounts, so a cleared
+   * token lets them sit again. It stops the player who refreshes and tries to
+   * resume, which is the realistic case.
+   */
+  kick(by: Player, playerId: string): TableAction[] {
+    if (this.ownerId !== by.id) {
+      return [{ kind: 'error', to: by.id, message: 'Only the host can ask someone to leave.' }];
+    }
+    if (playerId === by.id) {
+      return [{ kind: 'error', to: by.id, message: 'To leave your own table, stand up.' }];
+    }
+    const target = this.byId.get(playerId);
+    if (!target) {
+      return [{ kind: 'error', to: by.id, message: 'Nobody sits in that seat.' }];
+    }
+    /* stand() does the cleanup and its own "left the table" event; the table
+       says what really happened instead. */
+    this.stand(playerId);
+    this.banned.add(playerId);
+    return [
+      { kind: 'event', ekind: 'leave', text: `${target.name} was removed from the table by ${by.name}.` },
+      { kind: 'eject', to: playerId, message: `${by.name} removed you from "${this.name}". You cannot sit there again.` },
+    ];
+  }
+
+  /** Has the host removed this player? They may watch, but not sit. */
+  barred(playerId: string | null): boolean {
+    return playerId !== null && this.banned.has(playerId);
   }
 
   /** The player holding the soft lock on a cell (their current selection). */
@@ -618,6 +664,7 @@ export class Table {
       timeLimitMs: this.timeLimitMs,
       maxPlayers: this.maxPlayers,
       status: this.status,
+      ownerId: this.ownerId,
       players: this.players
         .slice()
         .sort((a, b) => a.seat - b.seat)
@@ -675,6 +722,7 @@ export class Table {
       status: this.status,
       filled: this.digits.filter((d) => d).length,
       you: forPlayerId !== null && this.byId.has(forPlayerId),
+      youKicked: this.barred(forPlayerId),
       ownerName: (this.get(this.ownerId ?? '') ?? this.players[0])?.name ?? 'nobody',
       roster: this.players
         .slice()

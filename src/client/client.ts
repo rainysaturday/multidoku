@@ -262,7 +262,9 @@ function renderLobby(): void {
       <span class="tag ${t.status}">${t.status === 'playing' ? 'playing' : t.status === 'won' ? 'solved' : 'waiting'}</span>
       ${t.mode === 'versus' && t.timeLimitMs ? `<span>${clockText(t.timeLimitMs)}</span><span>·</span>` : ''}
       <span>${t.playerCount}/${t.maxPlayers} seated</span><span>·</span><span>code <b>${t.code}</b></span>
+      <span>·</span><span>host <b>${t.ownerName}</b></span>
       ${t.you ? '<span class="tag you">you</span>' : ''}
+      ${t.youKicked ? '<span class="tag kicked" title="The host removed you from this table">removed</span>' : ''}
       ${t.status === 'playing' ? `<span>·</span><span>${t.filled}/81 cells</span>` : ''}`;
 
     const seats = document.createElement('div');
@@ -276,10 +278,12 @@ function renderLobby(): void {
       btn.textContent = holder ? initial(holder.name) : `${seat + 1}`;
       btn.title = holder
         ? `${holder.name}${holder.connected ? '' : ' (disconnected)'} — seat ${seat + 1}`
-        : t.you
-          ? 'You are already seated at this table'
-          : `Sit down in seat ${seat + 1}`;
-      btn.disabled = !!holder || t.you;
+        : t.youKicked
+          ? 'The host removed you from this table'
+          : t.you
+            ? 'You are already seated at this table'
+            : `Sit down in seat ${seat + 1}`;
+      btn.disabled = !!holder || t.you || t.youKicked;
       btn.addEventListener('click', () => send({ type: 'sit', tableId: t.id, seat }));
       seats.append(btn);
     }
@@ -288,8 +292,13 @@ function renderLobby(): void {
     actions.className = 'tactions';
     const join = document.createElement('button');
     join.className = 'primary';
-    join.textContent = t.you ? 'Go to table' : t.playerCount >= t.maxPlayers ? 'Table full' : 'Sit down';
-    join.disabled = !t.you && t.playerCount >= t.maxPlayers;
+    let joinLabel = 'Sit down';
+    if (t.you) joinLabel = 'Go to table';
+    else if (t.youKicked) joinLabel = 'Removed';
+    else if (t.playerCount >= t.maxPlayers) joinLabel = 'Table full';
+    join.textContent = joinLabel;
+    join.disabled = t.youKicked || (!t.you && t.playerCount >= t.maxPlayers);
+    if (t.youKicked) join.title = 'The host removed you from this table';
     join.addEventListener('click', () => (t.you ? openTable() : send({ type: 'sit', tableId: t.id })));
     actions.append(join);
 
@@ -482,10 +491,40 @@ function renderTable(): void {
   tickClock();
 }
 
+/* ------------------------------------------------------------------ */
+/* removing a player                                                  */
+/* ------------------------------------------------------------------ */
+
+/**
+ * The seat list is rebuilt on every table message, so which button is asking
+ * "Sure?" cannot live in the button itself: any message arriving between the
+ * two clicks would quietly re-arm it and the second click would only ask
+ * again. The answer is kept here and painted back on.
+ */
+let kickAsk: string | null = null;
+let kickAskTimer = 0;
+const KICK_ASK_MS = 4000;
+
+function askKick(playerId: string): void {
+  window.clearTimeout(kickAskTimer);
+  kickAsk = playerId;
+  kickAskTimer = window.setTimeout(() => {
+    kickAsk = null;
+    if (app.table) renderSeats();
+  }, KICK_ASK_MS);
+  renderSeats();
+}
+
+function clearKickAsk(): void {
+  window.clearTimeout(kickAskTimer);
+  kickAsk = null;
+}
+
 function renderSeats(): void {
   const t = app.table!;
   const box = $('seats');
   box.innerHTML = '';
+  const iAmHost = t.ownerId !== null && t.ownerId === app.playerId;
   const bySeat = new Map<number, PlayerView>();
   for (const p of t.players) bySeat.set(p.seat, p);
   for (let seat = 0; seat < t.maxPlayers; seat++) {
@@ -502,6 +541,15 @@ function renderSeats(): void {
     nm.className = 'nm';
     nm.textContent = p ? `${p.name}${p.isYou ? ' (you)' : ''}` : 'empty seat';
     line.append(no, dot, nm);
+    if (p && p.id === t.ownerId) {
+      /* Kicking is the one power the host has, so everyone should be able to
+         see who holds it. */
+      const host = document.createElement('span');
+      host.className = 'tag host';
+      host.textContent = 'host';
+      host.title = `${p.name} runs this table and can remove players`;
+      line.append(host);
+    }
     if (p) {
       const sub = document.createElement('span');
       sub.className = 'sub';
@@ -509,9 +557,35 @@ function renderSeats(): void {
       sub.textContent = p.connected ? where : 'away';
       line.append(sub);
     }
+    if (p && iAmHost && !p.isYou) {
+      const kick = document.createElement('button');
+      const armed = kickAsk === p.id;
+      kick.className = `kick${armed ? ' armed' : ''}`;
+      kick.textContent = armed ? 'Sure?' : 'Remove';
+      kick.title = armed
+        ? `Click again to remove ${p.name} from this table`
+        : `Remove ${p.name} from this table`;
+      kick.setAttribute('aria-label', kick.title);
+      kick.addEventListener('click', () => {
+        if (kickAsk !== p.id) {
+          askKick(p.id);
+          return;
+        }
+        clearKickAsk();
+        send({ type: 'kick', playerId: p.id });
+      });
+      line.append(kick);
+    } else if (p) {
+      /* every seated row reserves the Remove column, so the counts line up
+         whether or not you are the one holding the gavel */
+      const space = document.createElement('span');
+      space.className = 'kickspace';
+      line.append(space);
+    }
     box.append(line);
   }
 }
+
 
 /** Live standings. Only shown for a race; co-op has no winners to rank. */
 function renderScoreboard(): void {

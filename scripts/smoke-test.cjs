@@ -417,6 +417,118 @@ async function main() {
     check(bigDone.players.every((p) => p.placements > 0), 'every seat contributed digits to the board');
     for (const c of bigCrew) c.close();
 
+    /* --- the host can show somebody the door ------------------------ */
+    console.log('\nkicking a troublemaker');
+    const kickCrew = [];
+    for (const nm of ['Host', 'Plain', 'Rogue']) {
+      const c = new Client(nm);
+      await c.open();
+      c.hello(nm);
+      c.playerId = (await c.waitFor('welcome', null, `welcome ${nm}`)).playerId;
+      kickCrew.push(c);
+    }
+    const [HOSTC, PLAIN, ROGUE] = kickCrew;
+    HOSTC.send({ type: 'createTable', name: 'Quiet please', maxPlayers: 3, difficulty: 'easy' });
+    const kt = await HOSTC.waitFor('table', (m) => m.table.name === 'Quiet please', 'kick table created');
+    check(kt.table.ownerId === HOSTC.playerId, 'whoever opens the table is its host');
+    const kickTableId = kt.table.id;
+    const kickCode = kt.table.code;
+    for (const c of [PLAIN, ROGUE]) c.send({ type: 'sit', tableId: kickTableId });
+    const kSeated = await HOSTC.waitFor('table', (m) => m.table.players.length === 3, 'three seated');
+    check(kSeated.table.ownerId === HOSTC.playerId, 'sitting down does not steal the host role');
+    const rogueSeat = kSeated.table.players.find((p) => p.id === ROGUE.playerId).seat;
+
+    /* a round, so there is board work and a held cell to test the fallout of */
+    HOSTC.send({ type: 'start' });
+    const kPlay = await HOSTC.waitFor('table', (m) => m.table.status === 'playing', 'kick round started');
+    const kOpen = kPlay.table.digits.map((d, i) => (d ? -1 : i)).filter((i) => i >= 0);
+    const rogueDigit = 1 + (kOpen[0] % 9);
+    ROGUE.send({ type: 'place', cell: kOpen[0], digit: rogueDigit });
+    ROGUE.send({ type: 'select', cell: kOpen[1] });
+    await sleep(150);
+
+    /* a guest may not throw anyone out */
+    PLAIN.send({ type: 'kick', playerId: ROGUE.playerId });
+    const denied = await PLAIN.waitFor('error', (m) => /host/i.test(m.message), 'a guest trying to kick is refused');
+    check(/Only the host/.test(denied.message), `a guest is told who may kick (${denied.message})`);
+    await sleep(200);
+    check(!ROGUE.latest('left'), 'the refused kick does not remove anybody');
+
+    /* the host cannot remove themselves, or somebody who is not there */
+    HOSTC.send({ type: 'kick', playerId: HOSTC.playerId });
+    const selfKick = await HOSTC.waitFor('error', (m) => /stand up/i.test(m.message), 'self-kick refused');
+    check(/stand up/i.test(selfKick.message), `leaving your own table is standing up (${selfKick.message})`);
+    HOSTC.send({ type: 'kick', playerId: 'nobody-here' });
+    const ghostKick = await HOSTC.waitFor('error', (m) => /Nobody sits/.test(m.message), 'kicking a stranger refused');
+    check(/Nobody sits/.test(ghostKick.message), `an unknown player is refused (${ghostKick.message})`);
+    await sleep(200);
+    check(!ROGUE.latest('left'), 'neither misfire removes the target');
+
+    /* the real thing */
+    HOSTC.send({ type: 'kick', playerId: ROGUE.playerId });
+    const ejected = await ROGUE.waitFor('left', null, 'the removed player hears about it');
+    check(/removed you/.test(ejected.reason) && /Host/.test(ejected.reason),
+      `the removal is explained to its target (${ejected.reason})`);
+    const kickEvent = await PLAIN.waitFor('event', (m) => /removed from the table/.test(m.text), 'the table hears why');
+    check(kickEvent.kind === 'leave' && /Rogue/.test(kickEvent.text) && /Host/.test(kickEvent.text),
+      `the table is told who removed whom (${kickEvent.text})`);
+    const afterKick = (await HOSTC.waitFor('table', (m) => m.table.players.length === 2, 'roster drops the player')).table;
+    check(!afterKick.players.some((p) => p.id === ROGUE.playerId), 'the removed player is off the roster');
+    check(afterKick.ownerId === HOSTC.playerId, 'removing a player does not change who hosts');
+    check(afterKick.digits[kOpen[0]] === rogueDigit, 'the digits they placed stay on the board');
+    check(afterKick.editor[kOpen[0]] === ROGUE.playerId, 'and stay credited to them');
+    check(afterKick.alumni.some((a) => a.id === ROGUE.playerId), 'they join the alumni who own digits still played');
+    check(!afterKick.players.some((p) => p.selected === kOpen[1]), 'the cell they were holding is no longer claimed');
+    /* the rest of the table carries on where the troublemaker left off */
+    const takeOverDigit = 1 + (kOpen[1] % 9);
+    PLAIN.send({ type: 'select', cell: kOpen[1] });
+    PLAIN.send({ type: 'place', cell: kOpen[1], digit: takeOverDigit });
+    const carried = (await PLAIN.waitFor('table', (m) => m.table.editor[kOpen[1]] === PLAIN.playerId,
+      'a colleague takes over the cell')).table;
+    check(carried.digits[kOpen[1]] === takeOverDigit, 'the table can play on in the cell they were holding');
+
+    /* and they are not allowed back in */
+    ROGUE.send({ type: 'sit', tableId: kickTableId });
+    const barred = await ROGUE.waitFor('error', (m) => /cannot sit there again/.test(m.message), 'sitting again is refused');
+    check(/Quiet please/.test(barred.message), `the refusal names the table (${barred.message})`);
+    ROGUE.send({ type: 'joinByCode', code: kickCode });
+    const barredCode = await ROGUE.waitFor('error', (m) => /cannot sit there again/.test(m.message), 'the join code is refused too');
+    check(!!barredCode, 'the join code is no way back in');
+
+    const kLobby = await ROGUE.waitFor('lobby', (m) => m.tables.some((t) => t.youKicked), 'the lobby marks the table');
+    const marked = kLobby.tables.find((t) => t.youKicked);
+    check(marked.id === kickTableId && marked.you === false, 'the mark sits on the right table, and says they are not in it');
+    check(marked.ownerName === 'Host', `the lobby shows whose decision it was (host ${marked.ownerName})`);
+    const hLobby = await HOSTC.waitFor('lobby', (m) => m.tables.some((t) => t.id === kickTableId), 'host lobby');
+    check(hLobby.tables.find((t) => t.id === kickTableId).youKicked === false, 'nobody else is marked as removed');
+
+    /* out of this table, not off the site */
+    ROGUE.send({ type: 'createTable', name: 'Second chance', maxPlayers: 2, difficulty: 'easy' });
+    const own = await ROGUE.waitFor('table', (m) => m.table.name === 'Second chance', 'a removed player can still play');
+    check(own.table.ownerId === ROGUE.playerId, 'and is the host of their own table');
+    ROGUE.close();
+
+    /* the freed seat is a seat again */
+    const LATE = new Client('Late');
+    await LATE.open();
+    LATE.hello('Late');
+    LATE.playerId = (await LATE.waitFor('welcome', null, 'welcome Late')).playerId;
+    LATE.send({ type: 'sit', tableId: kickTableId });
+    const refilled = await HOSTC.waitFor('table', (m) => m.table.players.some((p) => p.name === 'Late'), 'the seat is reusable');
+    const lateSeat = refilled.table.players.find((p) => p.name === 'Late').seat;
+    check(lateSeat === rogueSeat, `the removed player's seat is taken again (seat ${lateSeat + 1})`);
+
+    /* the host role follows the table, and whoever holds it may remove people */
+    HOSTC.send({ type: 'leaveTable' });
+    await HOSTC.waitFor('left', null, 'the host stood up');
+    const handed = await PLAIN.waitFor('table', (m) => m.table.players.length === 2 && m.table.ownerId !== HOSTC.playerId,
+      'the host role moves on');
+    check(handed.table.ownerId === PLAIN.playerId, 'the host role passes to a player who stayed');
+    PLAIN.send({ type: 'kick', playerId: LATE.playerId });
+    const lateOut = await LATE.waitFor('left', null, 'the new host can remove a player');
+    check(/Plain/.test(lateOut.reason), `the new host holds the same power (${lateOut.reason})`);
+    for (const c of [HOSTC, PLAIN, LATE]) c.close();
+
     /* the race gets its own scope so its locals cannot clash with the co-op run */
     await (async () => {
     /* --- competitive mode: same board, validated digits, one winner --- */

@@ -1003,6 +1003,121 @@ async function main() {
     check(!man.error && man.json.icons.some((i) => (i.sizes || '').includes('512')), 'a 512px icon is offered (Android needs one to install)');
     check(!man.error && man.json.icons.some((i) => (i.purpose || '').includes('maskable')), 'a maskable icon is offered (launchers crop icons to a shape)');
 
+    /* ---- the host can show somebody the door ----------------------- */
+    console.log('\nkicking a player out');
+    const kickCard = (name) => `[...document.querySelectorAll('#tables .tcard')].find((c) => c.querySelector('h4').textContent === '${name}')`;
+    const kickBtns = (tab) => tab.js(`[...document.querySelectorAll('#seats .kick')].map((b) => ({
+      text: b.textContent, armed: b.classList.contains('armed'), who: b.closest('.pline').querySelector('.nm').textContent }))`);
+
+    await tabA.js(`document.getElementById('btn-leave').click()`);
+    await sleep(250);
+    await tabA.js(`document.getElementById('table-name').value = 'Booting Cal';
+                   document.getElementById('table-diff').value = 'easy';
+                   document.getElementById('table-seats').value = '3';
+                   document.querySelector('#create-form button[type=submit]').click();`);
+    await tabA.waitForJs(`${kickCard('Booting Cal')} !== undefined`, 'the host deals a table');
+    await tabA.js(`${kickCard('Booting Cal')}.querySelector('.tactions button.primary').click()`);
+    await tabA.waitForJs(`!document.getElementById('view-table').classList.contains('hidden')`, 'the host is at her table');
+
+    const third = await (await fetch(`http://127.0.0.1:${CDP_PORT}/json/new?about:blank`, { method: 'PUT' })).json();
+    const tabC = new Tab(third.webSocketDebuggerUrl, 'tabC');
+    await tabC.open();
+    await tabC.cmd('Page.enable');
+    await tabC.cmd('Runtime.enable');
+    await tabC.cmd('Emulation.setDeviceMetricsOverride', { width: 1200, height: 900, deviceScaleFactor: 1, mobile: false });
+    await tabC.cmd('Page.navigate', { url: `${BASE}/` });
+    await tabC.waitForJs(`document.querySelectorAll('#board .cell').length === 81`, 'tabC client booted');
+    await tabC.js(`document.getElementById('name').value = 'Cal'`);
+    await tabC.js(`document.getElementById('enter').click()`);
+    await tabC.waitForJs(`document.getElementById('who').textContent.includes('Cal')`, 'tabC signed in');
+    await tabC.waitForJs(`${kickCard('Booting Cal')} !== undefined`, 'Cal sees the table');
+    await tabC.js(`${kickCard('Booting Cal')}.querySelector('.tactions button.primary').click()`);
+    await tabC.waitForJs(`!document.getElementById('view-table').classList.contains('hidden')`, 'Cal sits down');
+    await tabA.waitForJs(`document.querySelectorAll('#seats .pline:not(:empty)').length >= 0 && ${'document.querySelectorAll("#seats .kick").length === 1'}`, 'the host is offered a Remove button');
+
+    const hostBtns = await kickBtns(tabA);
+    check(hostBtns.length === 1 && /Cal/.test(hostBtns[0].who) && hostBtns[0].text === 'Remove',
+      `the host gets one Remove button, on the other player's row (${JSON.stringify(hostBtns)})`);
+    const tagsA = await tabA.js(`[...document.querySelectorAll('#seats .tag.host')].map((x) => x.closest('.pline').querySelector('.nm').textContent)`);
+    check(tagsA.length === 1 && /Ana/.test(tagsA[0]), `the seat list says who runs the table (${JSON.stringify(tagsA)})`);
+    check((await kickBtns(tabC)).length === 0, 'nobody but the host is offered a Remove button');
+    check((await tabC.js(`[...document.querySelectorAll('#seats .tag.host')].map((x) => x.closest('.pline').querySelector('.nm').textContent)`)).some((n) => /Ana/.test(n)),
+      'the guest can see who to appeal to');
+    /* a seat number, a name, a host tag and a button is a lot for a phone card */
+    await tabA.cmd('Emulation.setDeviceMetricsOverride', { width: 320, height: 900, deviceScaleFactor: 1, mobile: true });
+    await sleep(300);
+    const tight = await tabA.js(`(() => {
+      const btn = document.querySelector('#seats .kick');
+      const row = btn.closest('.pline');
+      const panel = row.closest('.panel');
+      const pad = parseFloat(getComputedStyle(panel).paddingRight);
+      return { spill: row.scrollWidth - row.clientWidth,
+               past: +(btn.getBoundingClientRect().right - (panel.getBoundingClientRect().right - pad)).toFixed(1),
+               box: [+btn.getBoundingClientRect().width.toFixed(1), +btn.getBoundingClientRect().height.toFixed(1)] };
+    })()`);
+    check(tight.spill <= 1 && tight.past <= 1, `the Remove button still fits a phone-width seat row (${JSON.stringify(tight)})`);
+    const oneLine = await tabA.js(`(() => [...document.querySelectorAll('#seats .sub')].map((s) => s.getClientRects().length))()`);
+    check(oneLine.every((n) => n === 1), `no seat row splits its placed count over two lines at phone width (${JSON.stringify(oneLine)})`);
+    const columns = await tabA.js(`(() => {
+      const lines = [...document.querySelectorAll('#seats .pline')].filter((l) => l.querySelector('.sub'));
+      const right = lines.map((l) => +l.querySelector('.sub').getBoundingClientRect().right.toFixed(1));
+      return { spread: +(Math.max(...right) - Math.min(...right)).toFixed(1), right };
+    })()`);
+    check(columns.spread <= 1, `the Remove column is reserved in every row, so the placed counts line up (${JSON.stringify(columns)})`);
+    await tabA.shotEl('15c-kick-narrow', '#seats', 2);
+    await tabA.cmd('Emulation.setDeviceMetricsOverride', { width: 1200, height: 900, deviceScaleFactor: 1, mobile: false });
+    await sleep(300);
+    await tabA.shot('15-kick-offer');
+
+    /* one click only asks */
+    await tabA.js(`document.querySelector('#seats .kick').click()`);
+    const armed = await kickBtns(tabA);
+    check(armed.length === 1 && armed[0].armed && /sure/i.test(armed[0].text),
+      `the first click only asks for confirmation (${JSON.stringify(armed)})`);
+    await tabA.shot('15b-kick-armed');
+    check((await kickBtns(tabC)).length === 0, 'Cal is not shown the question being asked about them');
+
+    /* the seat list is rebuilt by any table message, and the question has to
+       survive it — otherwise the second click would only ask again */
+    await tabA.js(`document.getElementById('t-diff').value = 'hard';
+                   document.getElementById('t-diff').dispatchEvent(new Event('change'));`);
+    await tabC.waitForJs(`/hard/.test(document.getElementById('t-meta').textContent)`, 'a table message reaches Cal');
+    const stillArmed = await kickBtns(tabA);
+    check(stillArmed.length === 1 && stillArmed[0].armed, 'the question survives the seat list being rebuilt under it');
+
+    /* the second click does it */
+    await tabA.js(`document.querySelector('#seats .kick').click()`);
+    await tabC.waitForJs(`!document.getElementById('view-lobby').classList.contains('hidden') && document.getElementById('view-table').classList.contains('hidden')`,
+      'Cal is put back in the lobby');
+    check(/Ana removed you/.test(await tabC.js(`document.getElementById('toasts').innerText`)),
+      'Cal is told who removed them and from where');
+    const shown = await tabC.js(`(() => {
+      const c = ${kickCard('Booting Cal')};
+      if (!c) return null;
+      const j = c.querySelector('.tactions button.primary');
+      return { tag: (c.querySelector('.tag.kicked') || {}).textContent || '', label: j.textContent, disabled: j.disabled,
+               seatsOpen: [...c.querySelectorAll('.seat')].filter((x) => !x.disabled).length };
+    })()`);
+    check(!!shown && /removed/i.test(shown.tag), `the lobby marks the table they were thrown out of (${shown && shown.tag})`);
+    check(!!shown && shown.label === 'Removed' && shown.disabled, `its button offers them nothing (${shown && shown.label})`);
+    check(!!shown && shown.seatsOpen === 0, 'and no seat on that card is clickable any more');
+    await tabC.shot('16-kick-lobby-removed');
+
+    check((await kickBtns(tabA)).length === 0, 'the host is left with nobody to remove');
+    check(!/Cal/.test(await tabA.js(`document.getElementById('seats').innerText`)), 'the seat list drops the removed player');
+    await tabA.waitForJs(`/was removed from the table by Ana/.test(document.getElementById('feed').innerText)`, 'the table hears what happened');
+    check(true, 'the removal is explained in the table feed');
+    await tabA.shot('17-kick-seat-vacated');
+
+    /* out of the room, not off the site */
+    await tabC.js(`document.getElementById('table-name').value = 'Cal again';
+                   document.getElementById('table-diff').value = 'easy';
+                   document.getElementById('table-seats').value = '2';
+                   document.querySelector('#create-form button[type=submit]').click();`);
+    await tabC.waitForJs(`${kickCard('Cal again')} !== undefined`, 'Cal can run a table of their own');
+    check(true, 'a removed player can still play, just not there');
+    check(tabC.exceptions.length === 0, `removal throws nothing in the page${tabC.exceptions.length ? ` (${tabC.exceptions[0]})` : ''}`);
+
     /* ---- and the offline part of progressive: pull the network, reload ---- */
     await tabA.cmd('Network.enable');
     await tabA.cmd('Network.emulateNetworkConditions', { offline: true, latency: 0, downloadThroughput: -1, uploadThroughput: -1 });

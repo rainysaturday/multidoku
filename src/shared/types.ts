@@ -29,6 +29,8 @@ export type ClientMessage =
   | { type: 'sit'; tableId: string; seat?: number }
   | { type: 'joinByCode'; code: string }
   | { type: 'leaveTable' }
+  /** Host only: show somebody the door. The removed player cannot sit here again. */
+  | { type: 'kick'; playerId: string }
   | { type: 'start' }
   | { type: 'select'; cell: number | null }
   | { type: 'place'; cell: number; digit: number }
@@ -93,6 +95,8 @@ export interface TableView {
   timeLimitMs: number;
   maxPlayers: number;
   status: TableStatus;
+  /** The host: the player allowed to remove others. Transfers if they stand. */
+  ownerId: string | null;
   players: PlayerView[];
 
   /* board (81 entries, row-major) */
@@ -133,6 +137,8 @@ export interface LobbySummary {
   status: TableStatus;
   filled: number;
   you: boolean;
+  /** True once the host has removed you: you may watch, but not sit here again. */
+  youKicked: boolean;
   ownerName: string;
   roster: { seat: number; name: string; color: string; connected: boolean }[];
 }
