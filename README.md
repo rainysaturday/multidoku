@@ -134,10 +134,11 @@ two clicks — `Remove`, then `Sure?`, which expires after a few seconds — sen
 the lobby with a line in their feed saying why, and stops them sitting at that table again.
 Their digits stay on the board, because the board belongs to everyone and wiping it would
 give an exit some extra teeth; they keep their author colours and show up as alumni on the
-win card. A removed player can still spectate and can always start a table of their own. If
-the host stands up, the longest-seated player takes over. There are no accounts here, so
-that lockout keeps out the person who was just there — it is not a ban against someone
-willing to open a private window.
+win card. A removed player drops back to the lobby, where that table is still listed but
+its seats are closed to them; they are free to start or join any other table. If the host
+stands up, the longest-seated player takes over. There are no accounts here, so that
+lockout keeps out the person who was just there — it is not a ban against someone willing
+to open a private window.
 
 **Keyboard:** digits `1-9` place (or toggle a note in notes mode), `N` notes mode,
 `Backspace`/`Del`/`0` erase, arrow keys move the selection, `Esc` deselects.

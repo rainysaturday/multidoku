@@ -137,7 +137,7 @@ export interface LobbySummary {
   status: TableStatus;
   filled: number;
   you: boolean;
-  /** True once the host has removed you: you may watch, but not sit here again. */
+  /** True once the host has removed you: this table's seats are closed to you. */
   youKicked: boolean;
   ownerName: string;
   roster: { seat: number; name: string; color: string; connected: boolean }[];
